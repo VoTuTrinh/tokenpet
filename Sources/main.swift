@@ -4,6 +4,7 @@
 import Cocoa
 import SwiftUI
 import Combine
+import Carbon.HIToolbox
 
 // MARK: - Model
 
@@ -16,6 +17,11 @@ final class Model: ObservableObject {
     @Published var insights: [Insight] = []
     @Published var sessions: [SessionInfo] = []
     @Published var procs = AgentProcs()
+    @Published var machine = MachineState()
+    let census = ProcessCensus()
+    /// Sessions the user asked to keep (auto-close skips them); pid -> when the "closing in 5 min" warning went out.
+    var kept = Set<pid_t>()
+    private var autoWarned: [pid_t: Double] = [:]
     @Published var peek: Peek?
     @Published var claudeSrv = ProviderState()
     @Published var codexSrv = ProviderState()
@@ -118,18 +124,72 @@ final class Model: ObservableObject {
     func tick() {
         let doServer = serverQuota
         queue.async {
-            let pr = scanAgentProcs()
             let now = Date().timeIntervalSince1970
             let ins = self.store.current.values.map { analyze($0, self.store.history[$0.id] ?? [], now: now) }
-            let ss = self.scanner.sessions()
+            let ss = self.scanner.sessions(within: 86400)
+            var lastLog: [String: Double] = [:]
+            for x in ss { lastLog[x.project] = max(lastLog[x.project] ?? 0, x.lastActive) }
+            let ms = self.census.scan(lastLog: lastLog)
             DispatchQueue.main.async {
-                self.procs = pr; self.insights = ins; self.sessions = ss
-                self.notifier.evaluate(sessions: ss, procs: pr)
+                self.machine = ms; self.procs = ms.agentProcs; self.insights = ins
+                self.sessions = ss.filter { now - $0.lastActive < 1800 }
+                self.notifier.evaluate(sessions: self.sessions, machine: ms)
+                self.autoClose(ms)
                 self.onUpdate?(self)
             }
             if doServer { self.pollServer(userInitiated: false) }
         }
     }
+
+    /// Re-scan processes only (after a kill, or when the glance opens): cheap, ~10 ms.
+    func rescanProcs() {
+        queue.async {
+            let ms = self.census.scan()
+            DispatchQueue.main.async { self.machine = ms; self.procs = ms.agentProcs; self.onUpdate?(self) }
+        }
+    }
+
+    // MARK: cleanup actions (always from a user click, except the opt-in auto-close)
+
+    func close(_ s: AgentSession) {
+        ProcessCensus.terminate(s.tree) { [weak self] in DispatchQueue.main.async { self?.rescanProcs() } }
+        showPeek("Đã đóng \(s.name) · \(fmtMB(s.footprintMB))", 3)
+        rescanProcs()
+    }
+    func clean(_ l: Leftover) {
+        ProcessCensus.terminate(l.tree) { [weak self] in DispatchQueue.main.async { self?.rescanProcs() } }
+        showPeek("Đã dọn \(l.command) · \(fmtMB(l.footprintMB))", 3)
+        rescanProcs()
+    }
+    func cleanAll() {
+        let c = machine.cleanable(Prefs.shared.idleHours)
+        var trees = c.sessions.map { $0.tree } + c.leftovers.map { $0.tree }
+        guard let last = trees.popLast() else { return }
+        for t in trees { ProcessCensus.terminate(t) }
+        ProcessCensus.terminate(last) { [weak self] in DispatchQueue.main.async { self?.rescanProcs() } }
+        showPeek("Đã dọn \(c.sessions.count) session · \(c.leftovers.count) process · \(fmtMB(c.mb))", 3)
+        rescanProcs()
+    }
+    /// Opt-in: a session idle past `autoCloseHours` gets a 5-minute warning, then SIGTERM (resumable with `claude --resume`).
+    private func autoClose(_ ms: MachineState) {
+        let p = Prefs.shared, now = Date().timeIntervalSince1970
+        guard p.autoClose else { autoWarned.removeAll(); return }
+        let due = ms.sessions.filter { $0.isIdle(p.autoCloseHours) && !kept.contains($0.id) }
+        autoWarned = autoWarned.filter { k, _ in due.contains { $0.id == k } }
+        for s in due {
+            if let t = autoWarned[s.id] {
+                if now - t >= 300 {
+                    autoWarned[s.id] = nil
+                    ProcessCensus.terminate(s.tree)
+                    notifier.post("Đã đóng session \(s.name)", "Ngủ \(fmtAge(s.idleFor)), lấy lại \(fmtMB(s.footprintMB)). Mở lại: claude --resume.", level: 3)
+                }
+            } else {
+                autoWarned[s.id] = now
+                notifier.post("Sẽ đóng session \(s.name) sau 5 phút", "Ngủ \(fmtAge(s.idleFor)) · \(fmtMB(s.footprintMB)). Gõ gì đó trong session, hoặc bấm Giữ trong TokenPet.", level: 2)
+            }
+        }
+    }
+    var autoCloseScheduled: Set<pid_t> { Set(autoWarned.keys) }
 
     /// Runs on `queue`.
     private func publish(_ obs: [Limit], st: Stats?, cs: ProviderState?, xs: ProviderState?) {
@@ -357,9 +417,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     var statusItem: NSStatusItem!
     var surfaces: SurfaceManager!
     var settingsWindow: NSWindow?
+    var machineWindow: NSWindow?
+    var toast: ToastController?
     var popover: NSPopover?
     private var subs: [AnyCancellable] = []
     private var signals: [DispatchSourceSignal] = []
+    private var hotKey: EventHotKeyRef?
     private var applyScheduled = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -378,8 +441,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             DispatchQueue.main.async { s.applyScheduled = false; s.applyPrefs() }
         }.store(in: &subs)
         model.onLevelChange = { [weak self] top in self?.applyLevel(top) }
+        model.notifier.onCleanup = { [weak self] m, sug in
+            guard let s = self else { return }
+            if s.toast == nil { s.toast = ToastController() }
+            s.toast?.show(m, sug, kind: s.prefs.petClaude)
+        }
         model.onUpdate = { [weak self] m in self?.updateStatusTitle(m) }
         model.start()
+        registerHotKey()
         // QA hooks (no UI needed): `kill -USR1 <pid>` opens Settings, `kill -USR2 <pid>` shows a test peek.
         let hooks: [(Int32, () -> Void)] = [(SIGUSR1, { [weak self] in self?.openSettings() }),
                                             (SIGUSR2, { [weak self] in self?.model.showPeek("Claude · 5 giờ đã dùng 80%", 1) })]
@@ -390,12 +459,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
+    /// ⌃⌥M opens the "Máy" window from anywhere (Carbon hot key: no Accessibility permission needed).
+    func registerHotKey() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in AppDelegate.shared?.openMachine(); return noErr }, 1, &spec, nil, nil)
+        let id = EventHotKeyID(signature: 0x544B5054, id: 1)   // "TKPT"
+        RegisterEventHotKey(UInt32(kVK_ANSI_M), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKey)
+    }
+
     /// Everything in Settings takes effect immediately.
     func applyPrefs() {
         let anySurface = prefs.notch || prefs.edgeDock || prefs.floating
         statusItem.isVisible = prefs.menuBar || !anySurface     // never leave the user without a way in
         if prefs.floating { showPanel() } else if let p = panel { p.close(); panel = nil }
-        model.statsWanted = prefs.floating || UserDefaults.standard.bool(forKey: "glanceDetails")
+        model.statsWanted = prefs.floating
         surfaces.apply()
     }
 
@@ -445,6 +522,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func showStatusMenu() {
         let m = NSMenu()
         m.addItem(withTitle: "Làm mới", action: #selector(menuRefresh), keyEquivalent: "")
+        let mi = NSMenuItem(title: "Máy · AI đang giữ \(fmtMB(model.machine.aiMB))…", action: #selector(menuMachine), keyEquivalent: "m")
+        mi.keyEquivalentModifierMask = [.control, .option]
+        m.addItem(mi)
         m.addItem(withTitle: "Cài đặt…", action: #selector(menuSettings), keyEquivalent: ",")
         m.addItem(.separator())
         m.addItem(withTitle: "Thoát TokenPet", action: #selector(menuQuit), keyEquivalent: "q")
@@ -455,6 +535,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
     @objc func menuRefresh() { model.refresh(userInitiated: true) }
     @objc func menuSettings() { openSettings() }
+    @objc func menuMachine() { openMachine() }
+
+    /// The "Máy" window: what agents hold, with the evidence, and the buttons to take it back.
+    func openMachine() {
+        if machineWindow == nil {
+            let host = NSHostingController(rootView: MachineView(model: model))
+            let w = NSWindow(contentViewController: host)
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            w.title = "Máy · TokenPet"
+            w.setContentSize(NSSize(width: 700, height: 680))
+            w.minSize = NSSize(width: 560, height: 400)
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            w.center()
+            machineWindow = w
+        }
+        model.rescanProcs()
+        NSApp.activate(ignoringOtherApps: true)
+        machineWindow?.makeKeyAndOrderFront(nil)
+    }
     @objc func menuQuit() { NSApp.terminate(nil) }
 
     /// Menu bar: the tightest limit per tool, e.g. "C 59% · X 90%"; colored by the worst level.
@@ -488,6 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) == settingsWindow { settingsWindow = nil }   // drop it: RAM
+        if (notification.object as? NSWindow) == machineWindow { machineWindow = nil }
     }
 }
 
@@ -553,6 +654,23 @@ if args.contains("--selftest") {
     print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
     exit(fails == 0 ? 0 : 1)
 }
+if args.contains("--procs") {
+    // What the "Máy" section would show, as text: compare with `ps`/`lsof` when in doubt.
+    let census = ProcessCensus(); _ = census.scan(); usleep(500_000)
+    let ms = census.scan()
+    print(String(format: "RAM %.0f GB · còn %d%% · swap %.1f/%.1f GB · áp lực %d · AI giữ %@", ms.ramGB, ms.freePct, ms.swapUsedGB, ms.swapTotalGB, ms.pressure, fmtMB(ms.aiMB)))
+    for s in ms.sessions {
+        print(String(format: "%@ %6d %-6@ %-24@ %7@ %3d con  %@  [%@ %@]", s.busy ? "▶" : "○", s.id, s.tool, s.name, fmtMB(s.footprintMB), s.children,
+                     s.busy ? "đang chạy" + (s.busyWith.isEmpty ? "" : " · \(s.busyWith) \(Int(s.cpuPct))%") : "ngủ \(fmtAge(s.idleFor))", s.host, s.tty))
+    }
+    for o in ms.others { print(String(format: "  %-28@ %7@  %d process", o.name, fmtMB(o.footprintMB), o.procs)) }
+    for t in ms.insights { print("💡 " + t) }
+    for l in ms.leftovers {
+        print(String(format: "✕ %6d %-44@ %7@  %@ · %@ · %@%@%@", l.id, l.command, fmtMB(l.footprintMB), l.kind, l.project, fmtAge(l.age),
+                     l.ports.isEmpty ? "" : " · :" + l.ports.map(String.init).joined(separator: " :"), l.projectLive ? " · session còn mở" : ""))
+    }
+    exit(0)
+}
 if args.contains("--bench") {
     let sc = Scanner()
     var t = Date(); sc.scan(); let first = Date().timeIntervalSince(t)
@@ -562,7 +680,9 @@ if args.contains("--bench") {
                  first, warm, afterFirst, footprintMB(), sc.claude.count, sc.codex.count, sc.files.count))
     let changed: Set<String> = Set(sc.sessions().map { $0.id })
     t = Date(); sc.scan(only: changed); print(String(format: "event rescan (%d files) %.4fs", changed.count, Date().timeIntervalSince(t)))
-    t = Date(); let pr = scanAgentProcs(); print(String(format: "procs %d · %.0f MB · %.4fs", pr.count, pr.footprintMB, Date().timeIntervalSince(t)), pr.byProject.map { "\($0.key):\($0.value.0)/\(Int($0.value.1))MB" })
+    let census = ProcessCensus(); _ = census.scan()
+    t = Date(); let ms = census.scan(); let pr = ms.agentProcs
+    print(String(format: "procs %d · %.0f MB · %.4fs · %d sessions · %d leftovers", pr.count, pr.footprintMB, Date().timeIntervalSince(t), ms.sessions.count, ms.leftovers.count))
     for x in sc.sessions() { print(x.running ? "●" : "○", x.tool, x.project, fmtDur(Date().timeIntervalSince1970 - x.lastActive), fmtTok(x.tok5h), "\(fmtTok(Int(x.tokPerHour)))/h", x.subagents) }
     exit(0)
 }
@@ -581,7 +701,7 @@ if args.contains("--dump") || args.contains("--snapshot") {
         m.insights = m.store.current.values.map { analyze($0, m.store.history[$0.id] ?? [], now: now) }
         m.stats = buildStats(m.scanner, m.pricing)
         m.sessions = m.scanner.sessions()
-        m.procs = scanAgentProcs()
+        m.machine = m.census.scan(); m.procs = m.machine.agentProcs
         if args.contains("--dump") {
             print(String(format: "scan %.1fs", Date().timeIntervalSince(t0)))
             for i in m.insights.sorted(by: { $0.limit.id < $1.limit.id }) {
@@ -610,6 +730,21 @@ if args.contains("--dump") || args.contains("--snapshot") {
                 m.sessions = [SessionInfo(id: "a", tool: "claude", project: "tokenpet", lastActive: now - 10, tok5h: 820_000, tokPerHour: 310_000, subagents: 2),
                               SessionInfo(id: "b", tool: "codex", project: "web-shop", lastActive: now - 40, tok5h: 120_000, tokPerHour: 45_000)]
                 m.procs = AgentProcs(count: 5, footprintMB: 3400, byProject: ["tokenpet": (3, 2600), "web-shop": (2, 800)])
+                let S = { (pid: pid_t, name: String, proj: String, mb: Double, idle: Double, busy: Bool, with: String) in
+                    AgentSession(id: pid, tool: "claude", name: name, project: proj, cwd: "/Users/me/\(proj)", footprintMB: mb, ownMB: mb * 0.6, children: 2, childNames: busy ? "pytest, mcp-server" : "mcp-server, sourcekit-lsp",
+                                 startedAt: now - idle - 3600, idleFor: idle, busy: busy, busyWith: with, cpuPct: busy ? 98 : 0, tty: "ttys00\(pid)", host: pid % 2 == 0 ? "iTerm2" : "cmux",
+                                 members: busy ? [("claude", mb * 0.6), ("zsh", 1), ("pytest", mb * 0.4)] : [("claude", mb * 0.6), ("mcp-server", mb * 0.1), ("sourcekit-lsp", mb * 0.3)], tree: []) }
+                m.machine = MachineState(sessions: [S(1, "tokenpet-c0", "tokenpet", 560, 0, true, "pytest"),
+                                                    S(2, "presale-c8", "presale-pipeline", 72, 16 * 3600, false, ""),
+                                                    S(3, "mixing-ff", "mixing-outfit", 44, 10 * 3600, false, ""),
+                                                    S(4, "web-shop-2a", "web-shop", 118, 26 * 3600, false, ""),
+                                                    S(5, "mixing-5d", "mixing-outfit", 38, 20 * 60, false, "")],
+                                         leftovers: [Leftover(id: 10, command: "pnpm dev --port 3123", project: "kitemetric-web", cwd: "", footprintMB: 45, startedAt: now - 32 * 3600, ports: [3123], kind: "Next.js dev server", byAgent: false, projectLive: false, members: [("node", 45), ("next-server", 380)], tree: []),
+                                                     Leftover(id: 11, command: "python -m http.server 8198", project: "agent", cwd: "", footprintMB: 12, startedAt: now - 30 * 3600, ports: [8198], kind: "Python static server", byAgent: true, projectLive: false, members: [("Python", 12)], tree: []),
+                                                     Leftover(id: 12, command: "expo start --web --port 8081", project: "mixing-outfit", cwd: "", footprintMB: 52, startedAt: now - 8 * 3600, ports: [8081], kind: "Expo / Metro bundler", byAgent: false, projectLive: true, members: [("npm", 38), ("node", 14)], tree: [])],
+                                         others: [OtherApp(id: 100, name: "OrbStack", footprintMB: 5400, procs: 3, isApp: true), OtherApp(id: 101, name: "Google Chrome", footprintMB: 1300, procs: 55, isApp: true),
+                                                  OtherApp(id: 102, name: "Visual Studio Code", footprintMB: 507, procs: 40, isApp: true), OtherApp(id: 103, name: "mds_stores", footprintMB: 315, procs: 1, isApp: false)],
+                                         ramGB: 16, swapUsedGB: 14.5, swapTotalGB: 15.4, freePct: 9, pressure: 2, scannedAt: now)
                 m.claudeSrv.extra = ["Quota tuần tiêu ở: Claude Code 88% · chat 12%", "Extra usage tháng: 3.20 / 50.00 USD"]
                 m.codexSrv.extra = ["Credits: 12.50", "Lượt reset để dành: 1"]
                 m.peek = Peek(text: "Claude · 5 giờ sắp hết (~28 phút)", level: 2)
@@ -625,6 +760,8 @@ if args.contains("--dump") || args.contains("--snapshot") {
             let geo = NotchGeo(notchW: 185, notchH: 32)
             write("panel", ContentView(model: m, snapshot: true))
             write("glance", GlanceView(model: m, animate: false, forceDetails: true).padding(14).frame(width: 420).background(Color.black))
+            write("toast", ToastView(m: m.machine, suggestions: m.machine.suggestions(2), kind: .blob, onOpen: {}, onLater: {}).frame(width: ToastController.width))
+            write("machine", MachineView(model: m, snapshot: true).frame(width: 700).background(Color(white: 0.13)))
             write("notch-closed", NotchContent(model: m, mode: .closed, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(Color(white: 0.55)))
             write("notch-peek", NotchContent(model: m, mode: .peek, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(Color(white: 0.55)))
             write("notch-open", NotchContent(model: m, mode: .open, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(Color(white: 0.55)))

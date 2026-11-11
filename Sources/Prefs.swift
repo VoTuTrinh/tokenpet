@@ -48,6 +48,10 @@ final class Prefs: ObservableObject {
     @Published var agentRAM: Bool { didSet { d.set(agentRAM, forKey: "a.agentRAM") } }
     @Published var agentRAMGB: Double { didSet { d.set(agentRAMGB, forKey: "a.agentRAMGB") } }
     @Published var sound: Bool { didSet { d.set(sound, forKey: "a.sound") } }
+    // Machine (sessions and leftover processes)
+    @Published var idleHours: Double { didSet { d.set(idleHours, forKey: "m.idleH") } }
+    @Published var autoClose: Bool { didSet { d.set(autoClose, forKey: "m.auto") } }
+    @Published var autoCloseHours: Double { didSet { d.set(autoCloseHours, forKey: "m.autoH") } }
 
     init() {
         notch = d.object(forKey: "s.notch") as? Bool ?? true
@@ -70,9 +74,12 @@ final class Prefs: ObservableObject {
         notifyReset = d.object(forKey: "notifyReset") as? Bool ?? true
         warnAnomaly = d.object(forKey: "warnAnomaly") as? Bool ?? false
         taskDone = d.object(forKey: "a.taskDone") as? Bool ?? false
-        agentRAM = d.object(forKey: "a.agentRAM") as? Bool ?? false
+        agentRAM = d.object(forKey: "a.agentRAM") as? Bool ?? true
         agentRAMGB = d.object(forKey: "a.agentRAMGB") as? Double ?? 6
         sound = d.object(forKey: "a.sound") as? Bool ?? true
+        idleHours = d.object(forKey: "m.idleH") as? Double ?? 2
+        autoClose = d.object(forKey: "m.auto") as? Bool ?? false
+        autoCloseHours = d.object(forKey: "m.autoH") as? Double ?? 6
     }
 
     func apply(_ p: AlertPreset) {
@@ -81,7 +88,7 @@ final class Prefs: ObservableObject {
         case .quiet:    thresholds = [95]; warnBeforeEmpty = true; emptyMinutes = 30; warnWeek = false
                         notifyReset = false; warnAnomaly = false; taskDone = false; agentRAM = false; sound = false
         case .balanced: thresholds = [80, 95]; warnBeforeEmpty = true; emptyMinutes = 45; warnWeek = true
-                        notifyReset = true; warnAnomaly = false; taskDone = false; agentRAM = false; sound = true
+                        notifyReset = true; warnAnomaly = false; taskDone = false; agentRAM = true; sound = true
         case .all:      thresholds = [50, 70, 80, 90, 95]; warnBeforeEmpty = true; emptyMinutes = 60; warnWeek = true
                         notifyReset = true; warnAnomaly = true; taskDone = true; agentRAM = true; sound = true
         }

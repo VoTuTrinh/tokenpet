@@ -84,13 +84,28 @@ struct SettingsView: View {
                     Toggle("Quota đã reset", isOn: $prefs.notifyReset)
                     Toggle("Tiêu nhanh bất thường", isOn: $prefs.warnAnomaly)
                     Toggle("Session chạy lâu vừa xong", isOn: $prefs.taskDone)
-                    Toggle("Agent giữ ≥ \(Int(prefs.agentRAMGB)) GB RAM", isOn: $prefs.agentRAM)
+                    Toggle("Máy sắp hết RAM và có thứ để dọn, hoặc AI giữ ≥ \(Int(prefs.agentRAMGB)) GB: hiện thẻ gợi ý kèm pet (tối đa 1 lần/giờ)", isOn: $prefs.agentRAM)
                     Slider(value: $prefs.agentRAMGB, in: 2...32, step: 1).disabled(!prefs.agentRAM)
                     Toggle("Âm thanh", isOn: $prefs.sound)
                 }
                 HStack {
                     Button("Gửi thử thông báo") { model.notifier.post("TokenPet", "Thông báo hoạt động.", level: 2) }
                     Button("Nháy thử ở notch") { model.showPeek("Claude · 5 giờ đã dùng 80%", 1) }
+                }
+            }
+            Section("Máy") {
+                Stepper("Coi session là ngủ sau \(Int(prefs.idleHours)) giờ không dùng", value: $prefs.idleHours, in: 1...12, step: 1)
+                Toggle("Tự đóng session ngủ quá \(Int(prefs.autoCloseHours)) giờ (báo trước 5 phút, có nút Giữ)", isOn: $prefs.autoClose)
+                Stepper("Sau \(Int(prefs.autoCloseHours)) giờ", value: $prefs.autoCloseHours, in: 2...24, step: 1).disabled(!prefs.autoClose)
+                hint("Mỗi session claude/codex là một process 40–300 MB cộng MCP server và LSP riêng của nó. Đóng = thoát process trong tab đó, mở lại bằng claude --resume. \"Process bỏ quên\" là dev server agent chạy nền rồi quên: shell cha đã thoát nên đóng tab không tắt được, TokenPet dọn theo cả cây. Không có gì tự đóng trừ khi bật ở trên. Phím tắt ⌃⌥M mở bảng Máy từ bất kỳ đâu; bấm dòng \"AI giữ…\" trong bảng quota hoặc chuột phải menu bar cũng được.")
+                let m = model.machine
+                HStack {
+                    Button("Mở bảng Máy…  ⌃⌥M") { AppDelegate.shared?.openMachine() }
+                    Spacer()
+                    if !m.sessions.isEmpty || !m.leftovers.isEmpty {
+                        Text("AI giữ \(fmtMB(m.aiMB)) · \(m.sessions.count) session (\(m.idle(prefs.idleHours).count) ngủ) · \(m.leftovers.count) bỏ quên · RAM còn \(m.freePct)%")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             Section("Dữ liệu") {
@@ -108,7 +123,7 @@ struct SettingsView: View {
                     Button("Thư mục dữ liệu") { NSWorkspace.shared.open(supportDir) }
                     Button("Bảng giá API") { NSWorkspace.shared.open(model.pricing.url) }
                     Spacer()
-                    Text("TokenPet \(fmtMB(selfMB))" + (model.procs.count > 0 ? "  ·  agent \(fmtMB(model.procs.footprintMB))" : ""))
+                    Text("TokenPet \(fmtMB(selfMB))" + (model.machine.aiMB > 0 ? "  ·  AI \(fmtMB(model.machine.aiMB))" : ""))
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
@@ -129,7 +144,7 @@ struct SettingsView: View {
         if prefs.notifyReset { parts.append("reset") }
         if prefs.warnAnomaly { parts.append("tiêu bất thường") }
         if prefs.taskDone { parts.append("session xong") }
-        if prefs.agentRAM { parts.append("agent tốn RAM") }
+        if prefs.agentRAM { parts.append("máy nặng vì AI") }
         let what = parts.isEmpty ? "Không báo gì." : "Báo khi: " + parts.joined(separator: ", ") + "."
         return what + (prefs.preset == .all ? " Tất cả lên thông báo macOS." : " Chỉ việc cần làm ngay lên thông báo macOS, còn lại nháy ở notch.")
     }

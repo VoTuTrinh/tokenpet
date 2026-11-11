@@ -16,6 +16,8 @@ final class Notifier {
     var notifyReset: Bool { get { p.notifyReset } set { p.notifyReset = newValue } }
     /// Every alert also goes here (level 1 = watch, 2 = act now, 3 = good news) so the notch can peek.
     var onAlert: ((String, Int) -> Void)?
+    /// "Máy nặng": the app shows a toast with the pet and the concrete suggestions (and the usual notification).
+    var onCleanup: ((MachineState, [(String, Double)]) -> Void)?
     private var weekDay: [String: Double] = [:]
     private var wasRunning: [String: Double] = [:]   // session id -> running since
     private var ramWarnedAt = 0.0
@@ -80,8 +82,9 @@ final class Notifier {
         } else { for (t, b, lv) in out { post(t, b, level: lv) } }
     }
 
-    /// Optional, off by default: a session that ran ≥ 5 min went quiet; agent processes hold too much RAM.
-    func evaluate(sessions: [SessionInfo], procs: AgentProcs) {
+    /// A session that ran ≥ 5 min went quiet (off by default); the machine is under memory pressure and AI
+    /// tooling has something to clean (idle sessions, leftover processes), at most once an hour.
+    func evaluate(sessions: [SessionInfo], machine m: MachineState) {
         let now = Date().timeIntervalSince1970
         var still: [String: Double] = [:]
         for s in sessions where s.running { still[s.id] = wasRunning[s.id] ?? now }
@@ -93,12 +96,20 @@ final class Notifier {
             }
         }
         wasRunning = still
-        if p.agentRAM, procs.footprintMB / 1024 >= p.agentRAMGB, now - ramWarnedAt > 3600 {
-            ramWarnedAt = now
-            let top = procs.byProject.max { $0.value.1 < $1.value.1 }
-            post("Agent đang giữ \(String(format: "%.1f", procs.footprintMB / 1024)) GB RAM",
-                 "\(procs.count) process" + (top.map { " · nhiều nhất: \($0.key) \(Int($0.value.1)) MB" } ?? ""), level: 1)
-        }
+        guard p.agentRAM, now - ramWarnedAt > 3600 else { return }
+        let c = m.cleanable(p.idleHours)
+        let tooMuch = m.aiMB / 1024 >= p.agentRAMGB
+        guard (m.heavy && c.mb > 0) || tooMuch else { return }
+        ramWarnedAt = now
+        var what: [String] = []
+        if !c.sessions.isEmpty { what.append("\(c.sessions.count) session ngủ ≥ \(Int(p.idleHours))h") }
+        if !c.leftovers.isEmpty { what.append("\(c.leftovers.count) process bỏ quên") }
+        let title = m.heavy ? "Máy sắp hết RAM · AI giữ \(fmtMB(m.aiMB))" : "AI đang giữ \(fmtMB(m.aiMB))"
+        let sug = m.suggestions(p.idleHours)
+        let body = (what.isEmpty ? "" : what.joined(separator: " · ") + " (\(fmtMB(c.mb))). ")
+            + (sug.first.map { "Nên: \($0.0) → \(fmtMB($0.1)). " } ?? "") + "⌃⌥M mở bảng Máy."
+        post(title, body, level: m.pressure >= 4 ? 2 : 1)
+        if sink == nil { DispatchQueue.main.async { self.onCleanup?(m, sug) } }
     }
 
     var sink: ((String, String) -> Void)?    // tests: capture instead of posting

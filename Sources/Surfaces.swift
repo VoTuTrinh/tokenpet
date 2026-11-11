@@ -68,7 +68,7 @@ struct SideTabShape: Shape {
 struct NotchGeo {
     var notchW: CGFloat, notchH: CGFloat
     var earL: CGFloat = 38, earR: CGFloat = 38     // (mascot in ring) notch (mascot in ring): Claude left, Codex right
-    static let openW: CGFloat = 420, openH: CGFloat = 560, peekH: CGFloat = 28, peekMinW: CGFloat = 320
+    static let openW: CGFloat = 420, openH: CGFloat = 620, peekH: CGFloat = 28, peekMinW: CGFloat = 320
     func bodyWidth(_ mode: NotchMode, ears: Bool) -> CGFloat {
         let n = CGFloat(Prefs.shared.tools.count)
         switch mode {
@@ -291,7 +291,7 @@ final class EdgeController: ObservableObject {
     let edgeX: CGFloat, tabTop: CGFloat, screenBottom: CGFloat
     weak var model: Model?
     private var collapseWork: DispatchWorkItem?
-    static let openH: CGFloat = 560
+    static let openH: CGFloat = 620
 
     init(screen: NSScreen, right: Bool, model: Model) {
         self.model = model; self.right = right
