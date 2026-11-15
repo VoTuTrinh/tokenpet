@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var login = SMAppService.mainApp.status == .enabled
     @State private var loginError = ""
     @State private var selfMB = footprintMB()
+    var unframed = false          // --settings-size: measure the form's own ideal width
 
     var notchStyle: Binding<NotchStyle> {
         Binding(get: { prefs.notch ? (prefs.notchEarsAlways ? .ears : .hoverOnly) : .off },
@@ -34,13 +35,16 @@ struct SettingsView: View {
                 ForEach(["claude", "codex"], id: \.self) { tool in
                     let on = tool == "claude" ? $prefs.showClaude : $prefs.showCodex
                     let kind = tool == "claude" ? $prefs.petClaude : $prefs.petCodex
-                    HStack(spacing: 10) {
-                        Toggle(tool == "claude" ? "Claude Code" : "Codex", isOn: on).frame(width: 150, alignment: .leading)
-                        Spacer()
-                        PetView(color: tool == "claude" ? claudeColor : codexColor, mood: .calm, kind: kind.wrappedValue, fullness: 0.8, animate: false, size: 26)
-                        Picker("", selection: kind) { ForEach(PetKind.allCases, id: \.self) { Text($0.label).tag($0) } }
-                            .pickerStyle(.segmented).labelsHidden().frame(width: 200).disabled(!on.wrappedValue)
+                    Toggle(tool == "claude" ? "Claude Code" : "Codex", isOn: on)
+                    Picker(selection: kind) {
+                        ForEach(PetKind.allCases, id: \.self) { Text($0.label).tag($0) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            PetView(color: tool == "claude" ? claudeColor : codexColor, mood: .calm, kind: kind.wrappedValue, fullness: 0.8, animate: false, size: 22)
+                            Text("Mascot")
+                        }
                     }
+                    .pickerStyle(.segmented).disabled(!on.wrappedValue)
                 }
                 if prefs.tools.isEmpty { hint("Tắt cả hai thì không còn gì để hiện.") }
             }
@@ -48,12 +52,13 @@ struct SettingsView: View {
                 Picker("Notch (màn MacBook)", selection: notchStyle) {
                     ForEach(NotchStyle.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                Picker("Cạnh màn hình (màn không có notch)", selection: edgeStyle) {
+                Picker("Thẻ ở mép màn hình ngoài", selection: edgeStyle) {
                     ForEach(EdgeStyle.allCases, id: \.self) { Text($0.label).tag($0) }
                 }.pickerStyle(.segmented)
+                hint(edgeStatus)
                 Toggle("Menu bar  ·  C 60% · X 90%", isOn: $prefs.menuBar)
                 Toggle("Bảng nổi chi tiết (biểu đồ, $)", isOn: $prefs.floating)
-                hint("Rê chuột vào notch hoặc thẻ ở cạnh để mở bảng. Mục menu bar: click trái mở bảng, click phải ra menu.")
+                hint("Rê chuột vào notch hoặc thẻ ở mép để mở bảng. Mục menu bar: click trái mở bảng, click phải ra menu.")
             }
             Section("Pet") {
                 Toggle("Hiện pet (tắt = chỉ số)", isOn: $prefs.pet)
@@ -80,11 +85,11 @@ struct SettingsView: View {
                     }
                     Toggle("Sắp hết trước reset", isOn: $prefs.warnBeforeEmpty)
                     Stepper("Báo trước \(prefs.emptyMinutes) phút", value: $prefs.emptyMinutes, in: 15...120, step: 15).disabled(!prefs.warnBeforeEmpty)
-                    Toggle("Quota tuần sẽ không đủ tới reset", isOn: $prefs.warnWeek)
+                    toggle("Quota tuần sẽ không đủ tới reset", $prefs.warnWeek)
                     Toggle("Quota đã reset", isOn: $prefs.notifyReset)
                     Toggle("Tiêu nhanh bất thường", isOn: $prefs.warnAnomaly)
-                    Toggle("Session chạy lâu vừa xong", isOn: $prefs.taskDone)
-                    Toggle("Máy sắp hết RAM và có thứ để dọn, hoặc AI giữ ≥ \(Int(prefs.agentRAMGB)) GB: hiện thẻ gợi ý kèm pet (tối đa 1 lần/giờ)", isOn: $prefs.agentRAM)
+                    toggle("Session chạy lâu vừa xong", $prefs.taskDone)
+                    toggle("Máy sắp hết RAM và có thứ để dọn, hoặc AI giữ ≥ \(Int(prefs.agentRAMGB)) GB: hiện thẻ gợi ý kèm pet (tối đa 1 lần/giờ)", $prefs.agentRAM)
                     Slider(value: $prefs.agentRAMGB, in: 2...32, step: 1).disabled(!prefs.agentRAM)
                     Toggle("Âm thanh", isOn: $prefs.sound)
                 }
@@ -95,21 +100,17 @@ struct SettingsView: View {
             }
             Section("Máy") {
                 Stepper("Coi session là ngủ sau \(Int(prefs.idleHours)) giờ không dùng", value: $prefs.idleHours, in: 1...12, step: 1)
-                Toggle("Tự đóng session ngủ quá \(Int(prefs.autoCloseHours)) giờ (báo trước 5 phút, có nút Giữ)", isOn: $prefs.autoClose)
+                toggle("Tự đóng session ngủ quá \(Int(prefs.autoCloseHours)) giờ (báo trước 5 phút, có nút Giữ)", $prefs.autoClose)
                 Stepper("Sau \(Int(prefs.autoCloseHours)) giờ", value: $prefs.autoCloseHours, in: 2...24, step: 1).disabled(!prefs.autoClose)
                 hint("Mỗi session claude/codex là một process 40–300 MB cộng MCP server và LSP riêng của nó. Đóng = thoát process trong tab đó, mở lại bằng claude --resume. \"Process bỏ quên\" là dev server agent chạy nền rồi quên: shell cha đã thoát nên đóng tab không tắt được, TokenPet dọn theo cả cây. Không có gì tự đóng trừ khi bật ở trên. Phím tắt ⌃⌥M mở bảng Máy từ bất kỳ đâu; bấm dòng \"AI giữ…\" trong bảng quota hoặc chuột phải menu bar cũng được.")
                 let m = model.machine
-                HStack {
-                    Button("Mở bảng Máy…  ⌃⌥M") { AppDelegate.shared?.openMachine() }
-                    Spacer()
-                    if !m.sessions.isEmpty || !m.leftovers.isEmpty {
-                        Text("AI giữ \(fmtMB(m.aiMB)) · \(m.sessions.count) session (\(m.idle(prefs.idleHours).count) ngủ) · \(m.leftovers.count) bỏ quên · RAM còn \(m.freePct)%")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                Button("Mở bảng Máy…  ⌃⌥M") { AppDelegate.shared?.openMachine() }
+                if !m.sessions.isEmpty || !m.leftovers.isEmpty {
+                    hint("Hiện tại: AI giữ \(fmtMB(m.aiMB)) · \(m.sessions.count) session (\(m.idle(prefs.idleHours).count) ngủ) · \(m.leftovers.count) bỏ quên · RAM còn \(m.freePct)%")
                 }
             }
             Section("Dữ liệu") {
-                Toggle("Lấy quota từ server (Claude + Codex)", isOn: Binding(get: { model.serverQuota }, set: { _ in model.toggleServer() }))
+                toggle("Lấy quota từ server (Claude + Codex)", Binding(get: { model.serverQuota }, set: { _ in model.toggleServer() }))
                 hint("Chỉ đọc, dùng đăng nhập sẵn có của Claude Code / Codex. Không bật thì Codex đọc từ log, Claude cần statusline (\(model.statuslineEnabled ? "đang bật" : "chưa bật: chạy enable-claude-quota.sh")).")
                 if let e = model.claudeSrv.error, model.serverQuota { Text("Claude: \(e)").font(.caption).foregroundStyle(.orange) }
                 if let e = model.codexSrv.error, model.serverQuota { Text("Codex: \(e)").font(.caption).foregroundStyle(.orange) }
@@ -123,16 +124,27 @@ struct SettingsView: View {
                     Button("Thư mục dữ liệu") { NSWorkspace.shared.open(supportDir) }
                     Button("Bảng giá API") { NSWorkspace.shared.open(model.pricing.url) }
                     Spacer()
-                    Text("TokenPet \(fmtMB(selfMB))" + (model.machine.aiMB > 0 ? "  ·  AI \(fmtMB(model.machine.aiMB))" : ""))
-                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
+                hint("TokenPet đang dùng \(fmtMB(selfMB)) RAM" + (model.machine.aiMB > 0 ? " · AI \(fmtMB(model.machine.aiMB))" : "") + ".")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 600)      // fits a MacBook screen; the form scrolls
+        .frame(width: unframed ? nil : 500, height: unframed ? nil : 620)      // grouped Form wants ≥ 490; the form scrolls
         .onAppear { selfMB = footprintMB() }
     }
 
+    /// Says where the edge tab actually is right now, so turning it on never looks like nothing happened.
+    var edgeStatus: String {
+        if !prefs.edgeDock {
+            return "Một thẻ nhỏ có hai mascot dính ở mép màn hình, rê chuột vào là bảng trượt ra. Hiện trên mọi màn hình, kể cả màn có notch."
+        }
+        let n = NSScreen.screens.count
+        return "Đang hiện ở mép \(prefs.edgeRight ? "phải" : "trái")\(n > 1 ? " của \(n) màn hình" : ""), cách mép trên 120 pt. Rê chuột vào thẻ để mở bảng."
+    }
+    /// A Toggle whose label may wrap: a long one-line label would otherwise widen the whole form past the window.
+    func toggle(_ t: String, _ b: Binding<Bool>) -> some View {
+        Toggle(isOn: b) { Text(t).fixedSize(horizontal: false, vertical: true) }
+    }
     func hint(_ t: String) -> some View { Text(t).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
 
     /// One sentence that says what the chosen level actually does.

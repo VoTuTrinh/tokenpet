@@ -171,8 +171,9 @@ final class Model: ObservableObject {
         rescanProcs()
     }
     /// Opt-in: a session idle past `autoCloseHours` gets a 5-minute warning, then SIGTERM (resumable with `claude --resume`).
-    private func autoClose(_ ms: MachineState) {
-        let p = Prefs.shared, now = Date().timeIntervalSince1970
+    var terminator: ([ProcRef]) -> Void = { ProcessCensus.terminate($0) }     // tests swap this out
+    func autoClose(_ ms: MachineState, now: Double = Date().timeIntervalSince1970) {
+        let p = Prefs.shared
         guard p.autoClose else { autoWarned.removeAll(); return }
         let due = ms.sessions.filter { $0.isIdle(p.autoCloseHours) && !kept.contains($0.id) }
         autoWarned = autoWarned.filter { k, _ in due.contains { $0.id == k } }
@@ -180,7 +181,7 @@ final class Model: ObservableObject {
             if let t = autoWarned[s.id] {
                 if now - t >= 300 {
                     autoWarned[s.id] = nil
-                    ProcessCensus.terminate(s.tree)
+                    terminator(s.tree)
                     notifier.post("Đã đóng session \(s.name)", "Ngủ \(fmtAge(s.idleFor)), lấy lại \(fmtMB(s.footprintMB)). Mở lại: claude --resume.", level: 3)
                 }
             } else {
@@ -409,7 +410,7 @@ struct ContentView: View {
 
 final class Panel: NSPanel { override var canBecomeKey: Bool { true } }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static weak var shared: AppDelegate?
     let model = Model()
     let prefs = Prefs.shared
@@ -419,7 +420,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     var settingsWindow: NSWindow?
     var machineWindow: NSWindow?
     var toast: ToastController?
-    var popover: NSPopover?
+    var menuPanel: NSPanel?
+    private var menuMonitors: [Any] = []
+    private var menuObservers: [NSObjectProtocol] = []
+    private var menuCloseWork: DispatchWorkItem?
     private var subs: [AnyCancellable] = []
     private var signals: [DispatchSourceSignal] = []
     private var hotKey: EventHotKeyRef?
@@ -504,20 +508,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc func statusClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp { showStatusMenu(); return }
         if let p = panel { if p.isVisible { p.orderOut(nil) } else { p.orderFrontRegardless() }; return }
-        if let po = popover, po.isShown { po.performClose(nil); return }
-        guard let btn = statusItem.button else { return }
-        let po = NSPopover()
-        po.behavior = .transient
-        po.animates = prefs.transitions
-        po.appearance = NSAppearance(named: .darkAqua)
-        po.delegate = self
-        // Opaque black behind the glance: the popover's own vibrancy would wash the dark card out.
-        po.contentViewController = NSHostingController(rootView:
-            GlanceView(model: model, animate: prefs.animates).padding(14).frame(width: 420).background(Color.black.ignoresSafeArea()))
-        popover = po
-        po.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
+        if menuPanel != nil { closeMenuPanel(); return }
+        showMenuPanel()
     }
-    func popoverDidClose(_ notification: Notification) { popover = nil }   // free the view hierarchy
+
+    /// The glance under the menu bar item as the same black card the edge dock uses: no popover chrome, no arrow.
+    /// Anchored by its top edge so it can grow downwards. Goes away on a click anywhere else, Esc, the item again,
+    /// or 0.8 s after the mouse leaves it (like the notch), and when it opens the Máy window or Settings.
+    func showMenuPanel() {
+        guard let btn = statusItem.button, let win = btn.window else { return }
+        let host = NSHostingController(rootView:
+            GlanceView(model: model, animate: prefs.animates).padding(14).frame(width: 420)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.94)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+                .padding(6)                                           // room for the shadow
+                .environment(\.colorScheme, .dark)
+                .onHover { [weak self] inside in self?.menuHover(inside) })
+        host.sizingOptions = [.preferredContentSize]
+        let p = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.contentViewController = host
+        p.level = .popUpMenu
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
+        p.hidesOnDeactivate = false; p.isReleasedWhenClosed = false; p.animationBehavior = .none
+        let item = win.convertToScreen(btn.convert(btn.bounds, to: nil))
+        let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: item.midX, y: item.midY)) } ?? NSScreen.main
+        let vf = screen?.visibleFrame ?? item
+        let anchor = { (size: NSSize) -> NSPoint in
+            let x = min(max(vf.minX + 4, item.midX - size.width / 2), vf.maxX - size.width - 4)
+            return NSPoint(x: x, y: item.minY - 2)
+        }
+        p.setFrameTopLeftPoint(anchor(p.frame.size))
+        p.orderFrontRegardless()
+        menuPanel = p
+        btn.highlight(true)
+        // Keep the top edge where it is when the content grows or shrinks (details fold-out).
+        menuObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: p, queue: .main) { [weak p] _ in
+            guard let p = p else { return }
+            p.setFrameTopLeftPoint(anchor(p.frame.size))
+        })
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in self?.closeMenuPanel() }) { menuMonitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
+            if e.keyCode == 53 { self?.closeMenuPanel(); return nil }; return e }) { menuMonitors.append(m) }
+        menuHover(false)      // opened by a click: if the mouse never comes in, it still goes away by itself
+    }
+    private func menuHover(_ inside: Bool) {
+        menuCloseWork?.cancel(); menuCloseWork = nil
+        guard !inside else { return }
+        let w = DispatchWorkItem { [weak self] in self?.closeMenuPanel() }
+        menuCloseWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + (menuPanel?.frame.contains(NSEvent.mouseLocation) == true ? 0.8 : 2.5), execute: w)
+    }
+    func closeMenuPanel() {
+        menuCloseWork?.cancel(); menuCloseWork = nil
+        for o in menuObservers { NotificationCenter.default.removeObserver(o) }
+        for m in menuMonitors { NSEvent.removeMonitor(m) }
+        menuObservers.removeAll(); menuMonitors.removeAll()
+        menuPanel?.contentViewController = nil; menuPanel?.close(); menuPanel = nil
+        statusItem.button?.highlight(false)
+    }
 
     func showStatusMenu() {
         let m = NSMenu()
@@ -551,6 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             w.center()
             machineWindow = w
         }
+        closeMenuPanel()
         model.rescanProcs()
         NSApp.activate(ignoringOtherApps: true)
         machineWindow?.makeKeyAndOrderFront(nil)
@@ -583,6 +633,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             w.center()
             settingsWindow = w
         }
+        closeMenuPanel()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -633,6 +684,7 @@ if args.contains("--selftest") {
     let rw = now + 4 * 86400
     for m in stride(from: 0.0, through: 180, by: 10) { hB.append(Sample(ts: now - 10800 + m * 60, used: 40 + m / 60 * 3, resetsAt: rw)) }
     let b = analyze(lim("t.week", 49, rw, weekly: true), hB, now: now)
+    func a2w() -> Insight { analyze(lim("s.w", 49, rw, weekly: true), hB, now: now) }
     check("typical rate from history", abs((b.typicalPerHour ?? 0) - 0.5) < 0.15, String(format: "typ %.2f%%/h", b.typicalPerHour ?? -1))
     check("anomaly flagged", (b.anomaly ?? 0) >= 4, "\(b.details)")
     // C. Notifier: no replay on start, threshold cross, forecast, reset, no duplicate.
@@ -651,8 +703,88 @@ if args.contains("--selftest") {
     n2.evaluate([analyze(lim("t.m", 70, r5), hA, now: now)])
     n2.evaluate([analyze(lim("t.m", 70, r5), hA, now: now)])
     check("before-empty warning needs a new crossing after start", p2.isEmpty, "\(p2)")
+    // D. Settings → behaviour. Each switch in Settings must change something observable. Prefs are restored after.
+    let P = Prefs.shared
+    let domain = Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName
+    let savedPrefs = UserDefaults.standard.persistentDomain(forName: domain)
+    print("-- Cài đặt → hành vi")
+    P.showClaude = true; P.showCodex = false; check("Công cụ: chỉ Claude → một card", P.tools == ["claude"])
+    P.showCodex = true; check("Công cụ: cả hai → Claude trái, Codex phải", P.tools == ["claude", "codex"])
+    P.showClaude = false; check("Công cụ: chỉ Codex", P.tools == ["codex"]); P.showClaude = true
+    P.petClaude = .robot; P.petCodex = .ghost; check("Mascot riêng từng tool", P.kind("claude") == .robot && P.kind("codex") == .ghost)
+    let rm = P.reduceMotion
+    P.pet = false; P.motion = .full; check("Hiện pet tắt → pet không cử động", !P.animates)
+    P.pet = true; P.motion = .light; check("Chuyển động Nhẹ → bảng trượt, pet đứng yên", !P.animates && P.transitions == !rm)
+    P.motion = .off; check("Chuyển động Tắt → không gì cử động", !P.animates && !P.transitions)
+    P.motion = .full; check("Chuyển động Đầy đủ → pet cử động (trừ khi macOS Giảm chuyển động)", P.animates == !rm)
+    let screens = NSScreen.screens, notchScreens = screens.filter { $0.safeAreaInsets.top > 0 }.count
+    P.notch = true; P.edgeDock = true
+    var plan = SurfaceManager.plan()
+    check("Notch bật + thẻ mép bật → notch trên \(notchScreens) màn có notch, thẻ mép trên mọi màn (\(screens.count))",
+          plan.filter { $0.notch }.count == notchScreens && plan.allSatisfy { $0.edge })
+    P.notch = false; plan = SurfaceManager.plan()
+    check("Notch tắt → chỉ thẻ mép, trên mọi màn", plan.allSatisfy { !$0.notch && $0.edge })
+    P.edgeDock = false; plan = SurfaceManager.plan()
+    check("Notch tắt + thẻ mép tắt → không surface nào, menu bar bị ép hiện", plan.allSatisfy { !$0.notch && !$0.edge } && (P.menuBar || !(P.notch || P.edgeDock || P.floating)))
+    P.notch = true; P.edgeDock = true
+    P.apply(.quiet); check("Cảnh báo Im lặng → chỉ 95%, không reset / bất thường / máy nặng / âm thanh", P.thresholds == [95] && !P.notifyReset && !P.warnAnomaly && !P.agentRAM && !P.sound)
+    P.apply(.all); check("Cảnh báo Báo hết → 5 ngưỡng, mọi cảnh báo bật", P.thresholds.count == 5 && P.warnAnomaly && P.taskDone && P.agentRAM && P.notifyReset)
+    P.apply(.balanced); check("Cảnh báo Cân bằng → 80/95, máy nặng bật, bất thường tắt", P.thresholds == [80, 95] && P.agentRAM && !P.warnAnomaly)
+    func alerts(_ setup: () -> Void, _ run: (Notifier) -> Void) -> [String] {
+        setup(); let n = Notifier(requestAuth: false); var out: [String] = []; n.sink = { t, _ in out.append(t) }; run(n); return out
+    }
+    let i85 = analyze(lim("s.n", 85, r5), [], now: now), i96 = analyze(lim("s.n", 96, r5), [], now: now)
+    check("Báo khi vượt: không chọn ngưỡng nào → im lặng", alerts({ P.thresholds = [] }, { $0.evaluate([i85]); $0.evaluate([i96]) }).isEmpty)
+    check("Báo khi vượt 90 → báo khi lên 96%", alerts({ P.thresholds = [90] }, { $0.evaluate([i85]); $0.evaluate([i96]) }).contains { $0.contains("96%") })
+    let i60 = analyze(lim("s.e", 60, r5), [], now: now)
+    check("Sắp hết trước reset tắt → không báo dù sẽ hết sau ~30 phút", alerts({ P.warnBeforeEmpty = false; P.thresholds = [] }, { $0.evaluate([i60]); $0.evaluate([a]) }).isEmpty)
+    check("Sắp hết, báo trước 45 phút → báo", alerts({ P.warnBeforeEmpty = true; P.emptyMinutes = 45; P.thresholds = [] }, { $0.evaluate([i60]); $0.evaluate([a]) }).contains { $0.contains("sắp hết") })
+    check("Sắp hết, báo trước 15 phút → chưa báo khi còn ~30", alerts({ P.warnBeforeEmpty = true; P.emptyMinutes = 15; P.thresholds = [] }, { $0.evaluate([i60]); $0.evaluate([a]) }).isEmpty)
+    let i49 = analyze(lim("s.w", 49, rw, weekly: true), [], now: now)
+    check("Tiêu bất thường tắt → im", alerts({ P.warnAnomaly = false; P.thresholds = []; P.warnWeek = false }, { $0.evaluate([i49]); $0.evaluate([b]) }).isEmpty)
+    check("Tiêu bất thường bật → báo gấp N lần", alerts({ P.warnAnomaly = true; P.thresholds = []; P.warnWeek = false }, { $0.evaluate([i49]); $0.evaluate([b]) }).contains { $0.contains("bất thường") })
+    check("Tuần không đủ tắt → im", alerts({ P.warnWeek = false; P.warnAnomaly = false; P.thresholds = [] }, { $0.evaluate([i49]); $0.evaluate([a2w()]) }).isEmpty)
+    check("Tuần không đủ bật → báo một lần trong ngày", alerts({ P.warnWeek = true; P.warnAnomaly = false; P.thresholds = [] }, { $0.evaluate([i49]); $0.evaluate([a2w()]); $0.evaluate([a2w()]) }).filter { $0.contains("trước reset") }.count == 1)
+    let i0 = analyze(lim("s.n", 0, now + 18000), [], now: now)
+    check("Quota reset tắt → không báo reset", alerts({ P.notifyReset = false; P.thresholds = [] }, { $0.evaluate([i85]); $0.evaluate([i0]) }).isEmpty)
+    check("Quota reset bật → báo đã reset", alerts({ P.notifyReset = true; P.thresholds = [] }, { $0.evaluate([i85]); $0.evaluate([i0]) }).contains { $0.contains("reset") })
+    var ms = MachineState(ramGB: 16, swapUsedGB: 12, swapTotalGB: 14, freePct: 9, pressure: 2, scannedAt: now)
+    let S = { (pid: pid_t, idle: Double, mb: Double) in AgentSession(id: pid, tool: "claude", name: "s\(pid)", project: "p", cwd: "/p", footprintMB: mb, ownMB: mb, children: 0, childNames: "", startedAt: now - 7200 - idle, idleFor: idle, busy: false, busyWith: "", cpuPct: 0, tty: "", host: "", members: [], tree: [ProcRef(pid: pid, start: 1)]) }
+    ms.sessions = [S(901, 3 * 3600, 300), S(902, 600, 100)]
+    ms.leftovers = [Leftover(id: 903, command: "pnpm dev", project: "p", cwd: "/p", footprintMB: 100, startedAt: now - 3600, ports: [3000], kind: "dev server", byAgent: false, projectLive: false, members: [], tree: [ProcRef(pid: 903, start: 1)])]
+    P.idleHours = 2; check("Ngưỡng ngủ 2h → session ngủ 3h là 'ngủ', session 10 phút thì không", ms.idle(2).map { $0.id } == [901] && ms.cleanable(2).mb == 400)
+    P.idleHours = 4; check("Ngưỡng ngủ 4h → không session nào ngủ, chỉ còn process bỏ quên", ms.idle(4).isEmpty && ms.cleanable(4).mb == 100)
+    P.idleHours = 2
+    check("Máy nặng bật + thiếu RAM + có thứ để dọn → cảnh báo", alerts({ P.agentRAM = true }, { $0.evaluate(sessions: [], machine: ms) }).contains { $0.contains("RAM") })
+    check("Máy nặng tắt → im", alerts({ P.agentRAM = false }, { $0.evaluate(sessions: [], machine: ms) }).isEmpty)
+    var calm = ms; calm.pressure = 1; calm.freePct = 40
+    check("Máy không thiếu RAM → im dù có thứ để dọn", alerts({ P.agentRAM = true; P.agentRAMGB = 6 }, { $0.evaluate(sessions: [], machine: calm) }).isEmpty)
+    var big = calm; big.sessions = [S(904, 0, 7000)]
+    check("AI giữ ≥ 6 GB → báo dù máy không thiếu RAM", alerts({ P.agentRAM = true; P.agentRAMGB = 6 }, { $0.evaluate(sessions: [], machine: big) }).contains { $0.contains("AI") })
+    let mdl = Model(readOnly: true); var killed: [[ProcRef]] = []; mdl.terminator = { killed.append($0) }
+    var notes: [String] = []; mdl.notifier.sink = { t, _ in notes.append(t) }
+    P.autoClose = false; mdl.autoClose(ms, now: now); check("Tự đóng tắt → không báo, không đóng", killed.isEmpty && notes.isEmpty)
+    P.autoClose = true; P.autoCloseHours = 2; mdl.autoClose(ms, now: now)
+    check("Tự đóng bật (2h) → lần đầu chỉ báo 'sẽ đóng sau 5 phút'", killed.isEmpty && notes.last?.contains("Sẽ đóng") == true)
+    mdl.autoClose(ms, now: now + 200); check("Chưa đủ 5 phút → chưa đóng", killed.isEmpty)
+    mdl.autoClose(ms, now: now + 301); check("Đủ 5 phút → đóng đúng session ngủ 3h, không đụng session 10 phút", killed.count == 1 && killed[0].first?.pid == 901)
+    killed.removeAll(); notes.removeAll(); P.autoCloseHours = 1; mdl.kept.insert(902)
+    var ms2 = ms; ms2.sessions = [S(902, 2 * 3600, 100)]
+    mdl.autoClose(ms2, now: now); mdl.autoClose(ms2, now: now + 400); check("Giữ → session được giữ không bao giờ bị tự đóng", killed.isEmpty && notes.isEmpty)
+    P.autoClose = false
+    if let d = savedPrefs { UserDefaults.standard.setPersistentDomain(d, forName: domain) } else { UserDefaults.standard.removePersistentDomain(forName: domain) }
     print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
     exit(fails == 0 ? 0 : 1)
+}
+if args.contains("--settings-size") {
+    // Ideal size of the Settings form: it must not exceed the window, or the form overflows and gets clipped.
+    MainActor.assumeIsolated {
+        let m = Model(readOnly: true)
+        let host = NSHostingController(rootView: SettingsView(model: m, unframed: true))
+        print("settings ideal size:", host.view.fittingSize, "(texts unwrapped: only controls matter here)")
+        print("settings at 500 wide:", host.sizeThatFits(in: NSSize(width: 500, height: 10000)), "(width must stay ≤ 500 or the form is clipped)")
+    }
+    exit(0)
 }
 if args.contains("--procs") {
     // What the "Máy" section would show, as text: compare with `ps`/`lsof` when in doubt.

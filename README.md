@@ -40,7 +40,8 @@ The quota history used for forecasts lives in `~/Library/Application Support/Tok
     build/TokenPet.app/Contents/MacOS/TokenPet --snapshot <dir> --fake   # PNGs of every surface with demo data
     build/TokenPet.app/Contents/MacOS/TokenPet --bench                   # scan times, footprint, sessions, agent RAM
     build/TokenPet.app/Contents/MacOS/TokenPet --procs                   # the "Máy" census as text, to compare with ps/lsof
-    build/TokenPet.app/Contents/MacOS/TokenPet --selftest                # forecast + notifier checks
+    build/TokenPet.app/Contents/MacOS/TokenPet --selftest                # forecast + notifier checks, and every Settings switch → its behaviour
+    build/TokenPet.app/Contents/MacOS/TokenPet --settings-size           # the Settings form's ideal width (must fit the 500 pt window)
 
 ## Alerts
 Low noise by default. Presets: **Im lặng** / **Cân bằng** (default) / **Báo hết**. "Cân bằng" means: crossing 80% and 95%, about to run out before reset (< 45 min), weekly won't last (at most once a day), hit the limit, and reset (only if it was ≥ 70%). Only "act now" alerts become macOS notifications; the rest just peek in the notch. "Máy nặng vì AI" (memory pressure plus idle sessions or leftover processes, or AI holding ≥ N GB) is on in "Cân bằng", at most once an hour. Abnormal burn and task-done are under "Tùy chỉnh" and off by default.

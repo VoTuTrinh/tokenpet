@@ -64,12 +64,12 @@ final class Notifier {
             }
             // Weekly won't last until reset: at most once a day, and only when it's more than a few hours out.
             if p.warnWeek, l.weekly, let h = i.hitAt, h - Date().timeIntervalSince1970 > Double(p.emptyMinutes) * 60 {
+                // A forecast is a state, not a past event: do not swallow today's warning on the priming pass
+                // (the app launched while the week was already predicted to run out); it fires on the next tick.
                 let day = startOfDay(Date().timeIntervalSince1970)
-                if weekDay[l.id] != day {
+                if weekDay[l.id] != day, primed {
                     weekDay[l.id] = day
-                    if primed {
-                        out.append(("\(name) sẽ hết trước reset", "Dự báo \(i.headline), reset \(fmtWhen(l.resetsAt)). Còn \(String(format: "%.0f", i.perDayLeft ?? 0))%/ngày.", 1))
-                    }
+                    out.append(("\(name) sẽ hết trước reset", "Dự báo \(i.headline), reset \(fmtWhen(l.resetsAt)). Còn \(String(format: "%.0f", i.perDayLeft ?? 0))%/ngày.", 1))
                 }
             }
         }

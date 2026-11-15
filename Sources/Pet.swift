@@ -33,6 +33,7 @@ struct PetView: View {
     var fullness: Double          // 0…1 quota left: the pet deflates as you use it
     var animate: Bool             // false → one static frame, zero timers
     var size: CGFloat = 28
+    var centered = false          // inside a ring: keep the whole silhouette (ears, antenna) on the ring's centre
     var fps: Double = 8           // enough for a blob; only runs while a surface is open
 
     var body: some View {
@@ -93,7 +94,10 @@ struct PetView: View {
         let shake = (t != nil && mood == .alarmed) ? sin(time * 28) * w * 0.02 : 0
         let squash = 0.72 + 0.28 * max(0, min(1, fullness))           // deflate with usage
         let bh = h * 0.78 * squash * (1 + breathe), bw = w * 0.84 * (1 - breathe * 0.5)
-        let body = CGRect(x: (w - bw) / 2 + shake, y: h - bh - h * 0.04, width: bw, height: bh)
+        // Standing on the floor by default (it deflates like a balloon); centred when it sits inside a ring.
+        let extra: CGFloat = kind == .cat ? 0.2 : (kind == .robot ? 0.3 : 0)      // ears / antenna above the body
+        let y = centered ? (h - bh * (1 + extra)) / 2 + bh * extra : h - bh - h * 0.04
+        let body = CGRect(x: (w - bw) / 2 + shake, y: y, width: bw, height: bh)
         let tint: Color = mood == .alarmed ? .red : (mood == .empty ? .gray : color)
         g.fill(bodyPath(body), with: .color(tint))
         // soft highlight
@@ -177,7 +181,7 @@ struct PetRing: View {
                     .rotationEffect(.degrees(-90))
             }
             if showPet {
-                PetView(color: color, mood: mood, kind: kind, fullness: 1 - (used ?? 0) / 100, animate: animate, size: size * (size < 30 ? 0.7 : 0.62))
+                PetView(color: color, mood: mood, kind: kind, fullness: 1 - (used ?? 0) / 100, animate: animate, size: size * (size < 30 ? 0.7 : 0.62), centered: true)
             } else {
                 Text(used.map { "\(Int($0.rounded()))" } ?? "–").font(.system(size: size * 0.3, weight: .bold, design: .rounded))
             }

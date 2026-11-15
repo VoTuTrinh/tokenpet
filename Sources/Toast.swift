@@ -14,8 +14,10 @@ struct ToastView: View {
     var body: some View {
         let total = suggestions.reduce(0) { $0 + $1.1 }
         HStack(alignment: .top, spacing: 12) {
-            PetView(color: claudeColor, mood: m.pressure >= 4 ? .alarmed : .worried, kind: kind, fullness: Double(m.freePct) / 100, animate: false, size: 44)
-                .padding(.top, 2)
+            if Prefs.shared.pet {
+                PetView(color: claudeColor, mood: m.pressure >= 4 ? .alarmed : .worried, kind: kind, fullness: Double(m.freePct) / 100, animate: false, size: 44)
+                    .padding(.top, 2)
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text(m.pressure >= 4 ? "Máy hết RAM rồi!" : "Máy sắp hết RAM").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
                 Text("RAM còn \(m.freePct)% · swap \(String(format: "%.1f", m.swapUsedGB)) GB · AI đang giữ \(fmtMB(m.aiMB))")

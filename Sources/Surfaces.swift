@@ -375,13 +375,21 @@ final class SurfaceManager {
         if sig != signature { signature = sig; rebuild() } else { notches.forEach { $0.refit() } }
     }
 
+    /// Which surfaces each screen gets. The notch where there is one (and it is on); the edge tab on every screen
+    /// when it is on (a switch the user flips must show something, so it is not held back on the notch screen).
+    static func plan(_ screens: [NSScreen] = NSScreen.screens, prefs p: Prefs = .shared) -> [(notch: Bool, edge: Bool)] {
+        screens.map { scr in
+            let hasNotch = scr.safeAreaInsets.top > 0 && scr.auxiliaryTopLeftArea != nil && scr.auxiliaryTopRightArea != nil
+            return (p.notch && hasNotch, p.edgeDock)
+        }
+    }
     func rebuild() {
         notches.forEach { $0.close() }; edges.forEach { $0.close() }
         notches.removeAll(); edges.removeAll()
         let p = Prefs.shared
-        for screen in NSScreen.screens {
-            if p.notch, let n = NotchController(screen: screen, model: model) { notches.append(n); continue }
-            if p.edgeDock { edges.append(EdgeController(screen: screen, right: p.edgeRight, model: model)) }
+        for (screen, kind) in zip(NSScreen.screens, SurfaceManager.plan()) {
+            if kind.notch, let n = NotchController(screen: screen, model: model) { notches.append(n) }
+            if kind.edge { edges.append(EdgeController(screen: screen, right: p.edgeRight, model: model)) }
         }
     }
 }

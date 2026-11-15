@@ -61,7 +61,7 @@ struct MachineView: View {
         let groups = m.groups(prefs.idleHours)
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 14) {
-                PetView(color: claudeColor, mood: m.mood, kind: prefs.petClaude, fullness: Double(m.freePct) / 100, animate: false, size: 60)
+                if prefs.pet { PetView(color: claudeColor, mood: m.mood, kind: prefs.petClaude, fullness: Double(m.freePct) / 100, animate: false, size: 60) }
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("AI đang giữ \(fmtMB(m.aiMB))").font(.system(size: 26, weight: .bold, design: .rounded))
@@ -133,7 +133,7 @@ struct MachineView: View {
                 Text("Ngoài AI").font(.system(size: 13, weight: .bold)).foregroundStyle(.secondary)
                 Text("process lớn nhất của mỗi app · chỉ để so sánh").font(.system(size: 10.5)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Activity Monitor") { NSWorkspace.shared.launchApplication("Activity Monitor") }.controlSize(.small)
+                Button("Activity Monitor") { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }.controlSize(.small)
             }
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(m.others.enumerated()), id: \.element.id) { k, o in
