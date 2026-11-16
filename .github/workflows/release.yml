@@ -9,7 +9,7 @@ permissions:
   contents: write
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26     # the app uses macOS 26 SDK symbols (Liquid Glass) behind an availability check
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -45,4 +45,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "TokenPet ${GITHUB_REF_NAME#v}" --generate-notes
+        run: |
+          # A release made by hand for this tag already has assets: replace them instead of failing.
+          gh release create "$GITHUB_REF_NAME" dist/* --title "TokenPet ${GITHUB_REF_NAME#v}" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --clobber

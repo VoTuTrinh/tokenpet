@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 Repositioned around what agents hold on the Mac, with quota second; brought the information in line with comparable tools.
 - English and Vietnamese. Follows the Mac's language; pin one in Settings › Advanced.
 - Defaults: one surface on a fresh install (the notch, or a tab on the screen edge when there is no notch), no sound, menu bar item only when chosen.
