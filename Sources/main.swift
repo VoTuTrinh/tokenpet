@@ -50,9 +50,7 @@ final class Model: ObservableObject {
         notifier.onAlert = { [weak self] text, level in self?.showPeek(text, level) }
     }
 
-    var statuslineEnabled: Bool {
-        FileManager.default.fileExists(atPath: supportDir.appendingPathComponent("orig-statusline.sh").path)
-    }
+    var statuslineEnabled: Bool { StatuslineHook.enabled }
     func insights(_ tool: String) -> [Insight] {
         insights.filter { $0.limit.tool == tool }.sorted { a, b in
             if a.limit.weekly != b.limit.weekly { return !a.limit.weekly }
@@ -66,6 +64,7 @@ final class Model: ObservableObject {
         let w = LogWatcher(roots: scanner.watchRoots + [supportDir.path])
         w.onChange = { [weak self] in self?.refresh(changed: true) }
         watcher = w
+        rescanProcs()      // 10 ms, before the full log walk: the Mac card must never open on "no agents, 100% free"
         refresh(userInitiated: true)
         tick()
         tickTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.tick() }
@@ -151,23 +150,31 @@ final class Model: ObservableObject {
 
     // MARK: cleanup actions (always from a user click, except the opt-in auto-close)
 
+    /// What the last cleanup gave back, shown in the Mac window for a minute: the answer to "did that work?".
+    @Published var freed: (text: String, at: Double)?
+    private func noteFreed(_ n: Int, _ mb: Double) {
+        freed = (L("Closed \(n == 1 ? "1 item" : "\(n) items") · got back \(fmtMB(mb))", "Đã đóng \(n) mục · lấy lại \(fmtMB(mb))"), Date().timeIntervalSince1970)
+    }
     func close(_ s: AgentSession) {
+        noteFreed(1, s.footprintMB)
         ProcessCensus.terminate(s.tree) { [weak self] in DispatchQueue.main.async { self?.rescanProcs() } }
-        showPeek("Đã đóng \(s.name) · \(fmtMB(s.footprintMB))", 3)
+        showPeek(L("Closed \(s.name) · \(fmtMB(s.footprintMB))", "Đã đóng \(s.name) · \(fmtMB(s.footprintMB))"), 3)
         rescanProcs()
     }
     func clean(_ l: Leftover) {
+        noteFreed(1, l.footprintMB)
         ProcessCensus.terminate(l.tree) { [weak self] in DispatchQueue.main.async { self?.rescanProcs() } }
-        showPeek("Đã dọn \(l.command) · \(fmtMB(l.footprintMB))", 3)
+        showPeek(L("Stopped \(l.command) · \(fmtMB(l.footprintMB))", "Đã dọn \(l.command) · \(fmtMB(l.footprintMB))"), 3)
         rescanProcs()
     }
     func cleanAll() {
         let c = machine.cleanable(Prefs.shared.idleHours)
         var trees = c.sessions.map { $0.tree } + c.leftovers.map { $0.tree }
         guard let last = trees.popLast() else { return }
+        noteFreed(c.sessions.count + c.leftovers.count, c.mb)
         for t in trees { ProcessCensus.terminate(t) }
         ProcessCensus.terminate(last) { [weak self] in DispatchQueue.main.async { self?.rescanProcs() } }
-        showPeek("Đã dọn \(c.sessions.count) session · \(c.leftovers.count) process · \(fmtMB(c.mb))", 3)
+        showPeek(L("Closed \(c.sessions.count) session\(c.sessions.count == 1 ? "" : "s") · \(c.leftovers.count) process\(c.leftovers.count == 1 ? "" : "es") · \(fmtMB(c.mb))", "Đã dọn \(c.sessions.count) session · \(c.leftovers.count) process · \(fmtMB(c.mb))"), 3)
         rescanProcs()
     }
     /// Opt-in: a session idle past `autoCloseHours` gets a 5-minute warning, then SIGTERM (resumable with `claude --resume`).
@@ -182,11 +189,11 @@ final class Model: ObservableObject {
                 if now - t >= 300 {
                     autoWarned[s.id] = nil
                     terminator(s.tree)
-                    notifier.post("Đã đóng session \(s.name)", "Ngủ \(fmtAge(s.idleFor)), lấy lại \(fmtMB(s.footprintMB)). Mở lại: claude --resume.", level: 3)
+                    notifier.post(L("Closed session \(s.name)", "Đã đóng session \(s.name)"), L("Asleep \(fmtAge(s.idleFor)), got back \(fmtMB(s.footprintMB)). Reopen: claude --resume.", "Ngủ \(fmtAge(s.idleFor)), lấy lại \(fmtMB(s.footprintMB)). Mở lại: claude --resume."), level: 3)
                 }
             } else {
                 autoWarned[s.id] = now
-                notifier.post("Sẽ đóng session \(s.name) sau 5 phút", "Ngủ \(fmtAge(s.idleFor)) · \(fmtMB(s.footprintMB)). Gõ gì đó trong session, hoặc bấm Giữ trong TokenPet.", level: 2)
+                notifier.post(L("Closing session \(s.name) in 5 minutes", "Sẽ đóng session \(s.name) sau 5 phút"), L("Asleep \(fmtAge(s.idleFor)) · \(fmtMB(s.footprintMB)). Type something in the session, or click Keep in TokenPet.", "Ngủ \(fmtAge(s.idleFor)) · \(fmtMB(s.footprintMB)). Gõ gì đó trong session, hoặc bấm Giữ trong TokenPet."), level: 2)
             }
         }
     }
@@ -282,7 +289,7 @@ struct ToolCard: View {
     var staleText: String {
         guard let newest = rows.map({ $0.limit.observedAt }).max() else { return "" }
         let ago = Date().timeIntervalSince1970 - newest
-        return ago > 1800 ? "số liệu \(fmtDur(ago)) trước" : ""
+        return ago > 1800 ? L("data from \(fmtDur(ago)) ago", "số liệu \(fmtDur(ago)) trước") : ""
     }
 }
 
@@ -293,18 +300,18 @@ struct ContentView: View {
         let s = model.stats
         VStack(alignment: .leading, spacing: 8) {
             if !s.ready {
-                HStack { ProgressView().controlSize(.small); Text("Đang đọc log lần đầu…").font(.system(size: 11)) }
+                HStack { ProgressView().controlSize(.small); Text(L("Reading logs for the first time…", "Đang đọc log lần đầu…")).font(.system(size: 11)) }
                     .frame(maxWidth: .infinity, minHeight: 80)
             } else {
                 ToolCard(title: "Claude Code", color: claudeColor, rows: model.insights("claude"), srv: model.claudeSrv,
                          serverOn: model.serverQuota,
-                         emptyHint: model.serverQuota ? "Đang lấy quota…" : "Chuột phải → Lấy quota từ server")
+                         emptyHint: model.serverQuota ? L("Fetching quota…", "Đang lấy quota…") : L("Right-click → Get quota from server", "Chuột phải → Lấy quota từ server"))
                 ToolCard(title: "Codex", color: codexColor, rows: model.insights("codex"), srv: model.codexSrv,
-                         serverOn: model.serverQuota, emptyHint: "Chưa có dữ liệu")
+                         serverOn: model.serverQuota, emptyHint: L("No data yet", "Chưa có dữ liệu"))
                 Button(action: { withAnimation(.easeInOut(duration: 0.15)) { model.toggleDetails() } }) {
                     HStack(spacing: 4) {
                         Image(systemName: model.showDetails ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .bold))
-                        Text("Chi tiết").font(.system(size: 10))
+                        Text(L("Details", "Chi tiết")).font(.system(size: 10))
                         Spacer()
                     }.foregroundStyle(.secondary).contentShape(Rectangle())
                 }.buttonStyle(.plain)
@@ -321,55 +328,55 @@ struct ContentView: View {
     }
 
     @ViewBuilder var menuItems: some View {
-        Button("Làm mới") { model.refresh(userInitiated: true) }
-        Button((model.serverQuota ? "✓ " : "") + "Lấy quota từ server (Claude + Codex)") { model.toggleServer() }
-        Menu("Cảnh báo") {
+        Button(L("Refresh", "Làm mới")) { model.refresh(userInitiated: true) }
+        Button((model.serverQuota ? "✓ " : "") + L("Get quota from server (Claude + Codex)", "Lấy quota từ server (Claude + Codex)")) { model.toggleServer() }
+        Menu(L("Alerts", "Cảnh báo")) {
             ForEach(Notifier.allThresholds, id: \.self) { t in
-                Button((model.notifier.thresholds.contains(t) ? "✓ " : "") + "Khi vượt \(t)%") {
+                Button((model.notifier.thresholds.contains(t) ? "✓ " : "") + L("Above \(t)%", "Khi vượt \(t)%")) {
                     var th = model.notifier.thresholds
                     if let k = th.firstIndex(of: t) { th.remove(at: k) } else { th.append(t) }
                     model.notifier.thresholds = th; model.objectWillChange.send()
                 }
             }
             Divider()
-            Button((model.notifier.warnBeforeEmpty ? "✓ " : "") + "Khi sắp hết trước reset (< 45 phút)") {
+            Button((model.notifier.warnBeforeEmpty ? "✓ " : "") + L("When about to run out before reset (< 45 min)", "Khi sắp hết trước reset (< 45 phút)")) {
                 model.notifier.warnBeforeEmpty.toggle(); model.objectWillChange.send() }
-            Button((model.notifier.warnAnomaly ? "✓ " : "") + "Khi tiêu nhanh bất thường") {
+            Button((model.notifier.warnAnomaly ? "✓ " : "") + L("When burning unusually fast", "Khi tiêu nhanh bất thường")) {
                 model.notifier.warnAnomaly.toggle(); model.objectWillChange.send() }
-            Button((model.notifier.notifyReset ? "✓ " : "") + "Khi quota reset") {
+            Button((model.notifier.notifyReset ? "✓ " : "") + L("When quota resets", "Khi quota reset")) {
                 model.notifier.notifyReset.toggle(); model.objectWillChange.send() }
             Divider()
-            Button("Gửi thử thông báo") { model.notifier.post("TokenPet", "Thông báo hoạt động.") }
+            Button(L("Send a test notification", "Gửi thử thông báo")) { model.notifier.post("TokenPet", L("Notifications work.", "Thông báo hoạt động.")) }
         }
-        Button(model.showDetails ? "Ẩn chi tiết" : "Xem thêm chi tiết") { model.toggleDetails() }
-        Button(model.pinnedOnTop ? "Bỏ ghim (nằm dưới các cửa sổ)" : "Ghim nổi trên cùng") { model.togglePin() }
-        Button("Cài đặt…") { AppDelegate.shared?.openSettings() }
-        Button("Sửa bảng giá…") { NSWorkspace.shared.open(model.pricing.url) }
+        Button(model.showDetails ? L("Hide details", "Ẩn chi tiết") : L("Show more details", "Xem thêm chi tiết")) { model.toggleDetails() }
+        Button(model.pinnedOnTop ? L("Unpin (sit below windows)", "Bỏ ghim (nằm dưới các cửa sổ)") : L("Pin on top", "Ghim nổi trên cùng")) { model.togglePin() }
+        Button(L("Settings…", "Cài đặt…")) { AppDelegate.shared?.openSettings() }
+        Button(L("Edit price table…", "Sửa bảng giá…")) { NSWorkspace.shared.open(model.pricing.url) }
         Divider()
-        Button("Thoát") { NSApp.terminate(nil) }
+        Button(L("Quit", "Thoát")) { NSApp.terminate(nil) }
     }
 
     @ViewBuilder func details(_ s: Stats) -> some View {
         Card {
-            SectionHeader(title: "Claude · ước tính giá API", color: claudeColor, trailing: s.cTopModel.replacingOccurrences(of: "claude-", with: ""))
+            SectionHeader(title: L("Claude · estimated API price", "Claude · ước tính giá API"), color: claudeColor, trailing: s.cTopModel.replacingOccurrences(of: "claude-", with: ""))
             HStack(alignment: .firstTextBaseline, spacing: 14) {
-                stat("5 giờ", fmtUSD(s.c5hUSD), fmtTok(s.c5hTok) + " tok")
-                stat("Hôm nay", fmtUSD(s.cTodayUSD), fmtTok(s.cTodayTok) + " tok")
-                stat("7 ngày", fmtUSD(s.c7dUSD), "")
+                stat(L("5 hours", "5 giờ"), fmtUSD(s.c5hUSD), fmtTok(s.c5hTok) + " tok")
+                stat(L("Today", "Hôm nay"), fmtUSD(s.cTodayUSD), fmtTok(s.cTodayTok) + " tok")
+                stat(L("7 days", "7 ngày"), fmtUSD(s.c7dUSD), "")
             }
-            Text("Đốt \(fmtUSD(s.cBurnPerHour))/giờ · cache hit \(Int(s.cCachePct))%").font(.system(size: 10)).foregroundStyle(.secondary)
-            Text("$ quy theo giá API để so sánh, không phải tiền gói Pro/Max").font(.system(size: 9)).foregroundStyle(.tertiary)
+            Text(L("Burning \(fmtUSD(s.cBurnPerHour))/hour · cache hit \(Int(s.cCachePct))%", "Đốt \(fmtUSD(s.cBurnPerHour))/giờ · cache hit \(Int(s.cCachePct))%")).font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(L("$ is at API prices, for comparison; not what Pro/Max costs", "$ quy theo giá API để so sánh, không phải tiền gói Pro/Max")).font(.system(size: 9)).foregroundStyle(.tertiary)
             if !s.cUnpriced.isEmpty {
-                Text("Chưa có giá: \(s.cUnpriced.sorted().joined(separator: ", "))").font(.system(size: 9)).foregroundStyle(.orange)
+                Text(L("No price for: \(s.cUnpriced.sorted().joined(separator: ", "))", "Chưa có giá: \(s.cUnpriced.sorted().joined(separator: ", "))")).font(.system(size: 9)).foregroundStyle(.orange)
             }
-            Text("Codex hôm nay \(fmtTok(s.xTodayTok)) tok · 5h \(fmtTok(s.x5hTok))").font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(L("Codex today \(fmtTok(s.xTodayTok)) tok · 5h \(fmtTok(s.x5hTok))", "Codex hôm nay \(fmtTok(s.xTodayTok)) tok · 5h \(fmtTok(s.x5hTok))")).font(.system(size: 10)).foregroundStyle(.secondary)
             ForEach(model.claudeSrv.extra + model.codexSrv.extra, id: \.self) { e in
                 Text(e).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
         if !s.projects.isEmpty {
             Card {
-                SectionHeader(title: "Project tốn nhất hôm nay", color: .gray, trailing: "tok · $")
+                SectionHeader(title: L("Costliest projects today", "Project tốn nhất hôm nay"), color: .gray, trailing: "tok · $")
                 let mx = max(1, s.projects.first?.2 ?? 1)
                 ForEach(s.projects.indices, id: \.self) { k in
                     let p = s.projects[k]
@@ -386,9 +393,9 @@ struct ContentView: View {
             }
         }
         Card {
-            SectionHeader(title: "24 giờ qua", color: .gray, trailing: "cam Claude · xanh Codex")
+            SectionHeader(title: L("Last 24 hours", "24 giờ qua"), color: .gray, trailing: L("orange Claude · blue Codex", "cam Claude · xanh Codex"))
             Bars(values: s.hourly, height: 28)
-            SectionHeader(title: "7 ngày", color: .gray, trailing: s.streak > 1 ? "\(s.streak) ngày liên tục" : "")
+            SectionHeader(title: L("7 days", "7 ngày"), color: .gray, trailing: s.streak > 1 ? L("\(s.streak)-day streak", "\(s.streak) ngày liên tục") : "")
             Bars(values: s.daily.map { ($0.1, $0.2) }, labels: s.daily.map { dayLabel($0.0) }, height: 28)
         }
     }
@@ -402,7 +409,7 @@ struct ContentView: View {
     }
     func dayLabel(_ t: Double) -> String {
         let wd = Calendar.current.component(.weekday, from: Date(timeIntervalSince1970: t))
-        return wd == 1 ? "CN" : "T\(wd)"
+        return L(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][wd - 1], wd == 1 ? "CN" : "T\(wd)")
     }
 }
 
@@ -419,6 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var surfaces: SurfaceManager!
     var settingsWindow: NSWindow?
     var machineWindow: NSWindow?
+    var onboardingWindow: NSWindow?
     var toast: ToastController?
     var menuPanel: NSPanel?
     private var menuMonitors: [Any] = []
@@ -444,18 +452,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             s.applyScheduled = true
             DispatchQueue.main.async { s.applyScheduled = false; s.applyPrefs() }
         }.store(in: &subs)
+        // Lid closed or a display unplugged: the notch may be gone, and the menu bar item has to take over.
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .debounce(for: .seconds(0.6), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyPrefs(); if let m = self?.model { self?.updateStatusTitle(m) } }.store(in: &subs)
         model.onLevelChange = { [weak self] top in self?.applyLevel(top) }
         model.notifier.onCleanup = { [weak self] m, sug in
             guard let s = self else { return }
             if s.toast == nil { s.toast = ToastController() }
-            s.toast?.show(m, sug, kind: s.prefs.petClaude)
+            s.toast?.show(m, sug)
         }
         model.onUpdate = { [weak self] m in self?.updateStatusTitle(m) }
         model.start()
         registerHotKey()
+        // First run only; skipped or finished, it never comes back by itself (Settings › Giới thiệu reopens it).
+        if !UserDefaults.standard.bool(forKey: "onboarded") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.openOnboarding() }
+        }
         // QA hooks (no UI needed): `kill -USR1 <pid>` opens Settings, `kill -USR2 <pid>` shows a test peek.
         let hooks: [(Int32, () -> Void)] = [(SIGUSR1, { [weak self] in self?.openSettings() }),
-                                            (SIGUSR2, { [weak self] in self?.model.showPeek("Claude · 5 giờ đã dùng 80%", 1) })]
+                                            (SIGUSR2, { [weak self] in self?.model.showPeek(L("Claude · 5 hours 80% used", "Claude · 5 giờ đã dùng 80%"), 1) }),
+                                            (SIGINFO, { [weak self] in
+                                                guard let s = self else { return }
+                                                if s.prefs.menuBarVisible { s.showMenuPanel() } else { s.surfaces.demoOpen() } })]
         for (sig, act) in hooks {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
@@ -473,8 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Everything in Settings takes effect immediately.
     func applyPrefs() {
-        let anySurface = prefs.notch || prefs.edgeDock || prefs.floating
-        statusItem.isVisible = prefs.menuBar || !anySurface     // never leave the user without a way in
+        statusItem.isVisible = prefs.menuBarVisible             // never leave the user without a way in
         if prefs.floating { showPanel() } else if let p = panel { p.close(); panel = nil }
         model.statsWanted = prefs.floating
         surfaces.apply()
@@ -519,8 +537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let btn = statusItem.button, let win = btn.window else { return }
         let host = NSHostingController(rootView:
             GlanceView(model: model, animate: prefs.animates).padding(14).frame(width: 420)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.94)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+                .floatingSurface()
                 .padding(6)                                           // room for the shadow
                 .environment(\.colorScheme, .dark)
                 .onHover { [weak self] inside in self?.menuHover(inside) })
@@ -542,6 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         p.orderFrontRegardless()
         menuPanel = p
         btn.highlight(true)
+        NotificationCenter.default.post(name: .glanceOpened, object: nil)
         // Keep the top edge where it is when the content grows or shrinks (details fold-out).
         menuObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: p, queue: .main) { [weak p] _ in
             guard let p = p else { return }
@@ -570,13 +588,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func showStatusMenu() {
         let m = NSMenu()
-        m.addItem(withTitle: "Làm mới", action: #selector(menuRefresh), keyEquivalent: "")
-        let mi = NSMenuItem(title: "Máy · AI đang giữ \(fmtMB(model.machine.aiMB))…", action: #selector(menuMachine), keyEquivalent: "m")
+        m.addItem(withTitle: L("Refresh", "Làm mới"), action: #selector(menuRefresh), keyEquivalent: "")
+        let mi = NSMenuItem(title: L("Mac · agents hold \(fmtMB(model.machine.aiMB))…", "Máy · AI đang giữ \(fmtMB(model.machine.aiMB))…"), action: #selector(menuMachine), keyEquivalent: "m")
         mi.keyEquivalentModifierMask = [.control, .option]
         m.addItem(mi)
-        m.addItem(withTitle: "Cài đặt…", action: #selector(menuSettings), keyEquivalent: ",")
+        m.addItem(withTitle: L("Settings…", "Cài đặt…"), action: #selector(menuSettings), keyEquivalent: ",")
+        m.addItem(withTitle: L("Quick tour…", "Hướng dẫn nhanh…"), action: #selector(menuOnboarding), keyEquivalent: "")
         m.addItem(.separator())
-        m.addItem(withTitle: "Thoát TokenPet", action: #selector(menuQuit), keyEquivalent: "q")
+        m.addItem(withTitle: L("Quit TokenPet", "Thoát TokenPet"), action: #selector(menuQuit), keyEquivalent: "q")
         for it in m.items { it.target = self }
         statusItem.menu = m
         statusItem.button?.performClick(nil)
@@ -585,6 +604,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func menuRefresh() { model.refresh(userInitiated: true) }
     @objc func menuSettings() { openSettings() }
     @objc func menuMachine() { openMachine() }
+    @objc func menuOnboarding() { openOnboarding() }
+
+    /// The three-page introduction. Closing the window counts as "skip": it is marked done either way.
+    func openOnboarding() {
+        if onboardingWindow == nil {
+            let host = NSHostingController(rootView: OnboardingView(model: model, onDone: { [weak self] finished in
+                self?.onboardingWindow?.close()
+                if finished { self?.model.showPeek(L("TokenPet is ready", "TokenPet đã sẵn sàng"), 3) }
+            }))
+            let w = NSWindow(contentViewController: host)
+            w.styleMask = [.titled, .closable, .fullSizeContentView]
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.title = L("Welcome to TokenPet", "Chào mừng đến với TokenPet")
+            w.isMovableByWindowBackground = true
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            w.setContentSize(NSSize(width: OnboardingView.size.width, height: OnboardingView.size.height))
+            w.center()
+            onboardingWindow = w
+        }
+        closeMenuPanel()
+        NSApp.activate(ignoringOtherApps: true)
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+    }
 
     /// The "Máy" window: what agents hold, with the evidence, and the buttons to take it back.
     func openMachine() {
@@ -592,7 +636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let host = NSHostingController(rootView: MachineView(model: model))
             let w = NSWindow(contentViewController: host)
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            w.title = "Máy · TokenPet"
+            w.title = L("Mac · TokenPet", "Máy · TokenPet")
             w.setContentSize(NSSize(width: 700, height: 680))
             w.minSize = NSSize(width: 560, height: 400)
             w.isReleasedWhenClosed = false
@@ -640,6 +684,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) == settingsWindow { settingsWindow = nil }   // drop it: RAM
         if (notification.object as? NSWindow) == machineWindow { machineWindow = nil }
+        if (notification.object as? NSWindow) == onboardingWindow {
+            onboardingWindow?.contentViewController = nil; onboardingWindow = nil
+            UserDefaults.standard.set(true, forKey: "onboarded")
+        }
     }
 }
 
@@ -659,7 +707,16 @@ if args.contains("--probe") {
     }
     exit(0)
 }
+if let k = args.firstIndex(of: "--statusline"), k + 1 < args.count {
+    // Same switch as Settings › Dữ liệu, for a terminal: --statusline on | off
+    do {
+        if args[k + 1] == "on" { try StatuslineHook.enable() } else { try StatuslineHook.disable() }
+        print(StatuslineHook.enabled ? "statusline: on" : "statusline: off")
+    } catch let e as StatuslineHook.Failure { print(e.message); exit(1) } catch { print(error); exit(1) }
+    exit(0)
+}
 if args.contains("--selftest") {
+    Lang.override = "vi"          // the checks below match on the Vietnamese wording
     let now = Date().timeIntervalSince1970
     var fails = 0
     func check(_ name: String, _ ok: Bool, _ info: String = "") { print((ok ? "PASS " : "FAIL ") + name + (info.isEmpty ? "" : " — " + info)); if !ok { fails += 1 } }
@@ -725,11 +782,13 @@ if args.contains("--selftest") {
     P.notch = false; plan = SurfaceManager.plan()
     check("Notch tắt → chỉ thẻ mép, trên mọi màn", plan.allSatisfy { !$0.notch && $0.edge })
     P.edgeDock = false; plan = SurfaceManager.plan()
-    check("Notch tắt + thẻ mép tắt → không surface nào, menu bar bị ép hiện", plan.allSatisfy { !$0.notch && !$0.edge } && (P.menuBar || !(P.notch || P.edgeDock || P.floating)))
+    check("Notch tắt + thẻ mép tắt → không surface nào, menu bar bị ép hiện", plan.allSatisfy { !$0.notch && !$0.edge } && P.menuBarVisible)
+    P.notch = true; P.edgeDock = false; P.floating = false; P.menuBar = false
+    check("Chỉ notch: máy có notch → menu bar ẩn; không có notch → menu bar tự hiện", P.menuBarVisible == !P.hasNotchScreen)
     P.notch = true; P.edgeDock = true
     P.apply(.quiet); check("Cảnh báo Im lặng → chỉ 95%, không reset / bất thường / máy nặng / âm thanh", P.thresholds == [95] && !P.notifyReset && !P.warnAnomaly && !P.agentRAM && !P.sound)
     P.apply(.all); check("Cảnh báo Báo hết → 5 ngưỡng, mọi cảnh báo bật", P.thresholds.count == 5 && P.warnAnomaly && P.taskDone && P.agentRAM && P.notifyReset)
-    P.apply(.balanced); check("Cảnh báo Cân bằng → 80/95, máy nặng bật, bất thường tắt", P.thresholds == [80, 95] && P.agentRAM && !P.warnAnomaly)
+    P.apply(.balanced); check("Cảnh báo Cân bằng → 80/95, máy nặng bật, bất thường tắt, không âm thanh", P.thresholds == [80, 95] && P.agentRAM && !P.warnAnomaly && !P.sound)
     func alerts(_ setup: () -> Void, _ run: (Notifier) -> Void) -> [String] {
         setup(); let n = Notifier(requestAuth: false); var out: [String] = []; n.sink = { t, _ in out.append(t) }; run(n); return out
     }
@@ -772,6 +831,13 @@ if args.contains("--selftest") {
     var ms2 = ms; ms2.sessions = [S(902, 2 * 3600, 100)]
     mdl.autoClose(ms2, now: now); mdl.autoClose(ms2, now: now + 400); check("Giữ → session được giữ không bao giờ bị tự đóng", killed.isEmpty && notes.isEmpty)
     P.autoClose = false
+    // E. A fresh install: one surface, nothing loud, nothing that acts by itself.
+    UserDefaults.standard.removePersistentDomain(forName: domain)
+    let fresh = Prefs()
+    let shown = [fresh.notch && fresh.hasNotchScreen, fresh.edgeDock, fresh.floating, fresh.menuBarVisible].filter { $0 }.count
+    check("Cài mới → đúng một chỗ hiện (notch nếu có, không thì thẻ ở mép màn hình)", shown == 1 && fresh.edgeDock == !fresh.hasNotchScreen, "\(shown)")
+    check("Cài mới → không âm thanh, không tự đóng session, không cảnh báo bất thường / session xong", !fresh.sound && !fresh.autoClose && !fresh.warnAnomaly && !fresh.taskDone)
+    check("Rê chuột: phải dừng ≥ 150 ms mới mở (lướt qua không mở), rời ≥ 350 ms mới đóng", Hover.openDelay >= 0.15 && Hover.closeDelay >= 0.35)
     if let d = savedPrefs { UserDefaults.standard.setPersistentDomain(d, forName: domain) } else { UserDefaults.standard.removePersistentDomain(forName: domain) }
     print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
     exit(fails == 0 ? 0 : 1)
@@ -784,6 +850,11 @@ if args.contains("--settings-size") {
         print("settings ideal size:", host.view.fittingSize, "(texts unwrapped: only controls matter here)")
         print("settings at 500 wide:", host.sizeThatFits(in: NSSize(width: 500, height: 10000)), "(width must stay ≤ 500 or the form is clipped)")
     }
+    exit(0)
+}
+if let k = args.firstIndex(of: "--ports"), k + 1 < args.count, let pid = pid_t(args[k + 1]) {
+    // Listening ports of one pid and whether each is bound to every interface: compare with `lsof -nP -iTCP -sTCP:LISTEN`.
+    for (port, wide) in ProcessCensus().listenPorts(pid) { print(port, wide ? "all interfaces" : "loopback only") }
     exit(0)
 }
 if args.contains("--procs") {
@@ -846,40 +917,43 @@ if args.contains("--dump") || args.contains("--snapshot") {
         }
         // --snapshot <dir>: every surface as PNG (static frames; hover/placement need a real screen).
         if let k = args.firstIndex(of: "--snapshot"), k + 1 < args.count {
+            Surface.flat = true       // system glass is drawn by the window server, not by ImageRenderer
             let dir = URL(fileURLWithPath: args[k + 1])
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             m.showDetails = args.contains("--details")
             if args.contains("--fake") {    // deterministic demo data for the pictures
                 let r5 = now + 2 * 3600, rw = now + 3 * 86400
-                let L = { (id: String, tool: String, label: String, u: Double, r: Double, w: Double) in
+                let lim = { (id: String, tool: String, label: String, u: Double, r: Double, w: Double) in
                     Limit(id: id, tool: tool, label: label, used: u, resetsAt: r, windowSec: w, source: "server", observedAt: now) }
                 let h = stride(from: 0.0, through: 50, by: 5).map { Sample(ts: now - 3000 + $0 * 60, used: 40 + $0, resetsAt: r5) }
-                m.insights = [analyze(L("claude.5h", "claude", "5 giờ", 91, r5, 18000), h, now: now),
-                              analyze(L("claude.week", "claude", "Tuần · mọi model", 62, rw, 604800), [], now: now),
-                              analyze(L("codex.5h", "codex", "5 giờ", 23, r5, 18000), [], now: now),
-                              analyze(L("codex.week", "codex", "Tuần", 48, rw, 604800), [], now: now),
-                              analyze(L("claude.week.fable", "claude", "Tuần · Fable", 12, rw, 604800), [], now: now)]
+                m.insights = [analyze(lim("claude.5h", "claude", L("5 hours", "5 giờ"), 91, r5, 18000), h, now: now),
+                              analyze(lim("claude.week", "claude", L("Week · all models", "Tuần · mọi model"), 62, rw, 604800), [], now: now),
+                              analyze(lim("codex.5h", "codex", L("5 hours", "5 giờ"), 23, r5, 18000), [], now: now),
+                              analyze(lim("codex.week", "codex", L("Week", "Tuần"), 48, rw, 604800), [], now: now),
+                              analyze(lim("claude.week.fable", "claude", L("Week · Fable", "Tuần · Fable"), 12, rw, 604800), [], now: now)]
                 m.sessions = [SessionInfo(id: "a", tool: "claude", project: "tokenpet", lastActive: now - 10, tok5h: 820_000, tokPerHour: 310_000, subagents: 2),
                               SessionInfo(id: "b", tool: "codex", project: "web-shop", lastActive: now - 40, tok5h: 120_000, tokPerHour: 45_000)]
                 m.procs = AgentProcs(count: 5, footprintMB: 3400, byProject: ["tokenpet": (3, 2600), "web-shop": (2, 800)])
                 let S = { (pid: pid_t, name: String, proj: String, mb: Double, idle: Double, busy: Bool, with: String) in
-                    AgentSession(id: pid, tool: "claude", name: name, project: proj, cwd: "/Users/me/\(proj)", footprintMB: mb, ownMB: mb * 0.6, children: 2, childNames: busy ? "pytest, mcp-server" : "mcp-server, sourcekit-lsp",
+                    AgentSession(id: pid, tool: "claude", name: name, project: proj, cwd: "~/code/\(proj)", footprintMB: mb, ownMB: mb * 0.6, children: 2, childNames: busy ? "pytest, mcp-server" : "mcp-server, sourcekit-lsp",
                                  startedAt: now - idle - 3600, idleFor: idle, busy: busy, busyWith: with, cpuPct: busy ? 98 : 0, tty: "ttys00\(pid)", host: pid % 2 == 0 ? "iTerm2" : "cmux",
                                  members: busy ? [("claude", mb * 0.6), ("zsh", 1), ("pytest", mb * 0.4)] : [("claude", mb * 0.6), ("mcp-server", mb * 0.1), ("sourcekit-lsp", mb * 0.3)], tree: []) }
-                m.machine = MachineState(sessions: [S(1, "tokenpet-c0", "tokenpet", 560, 0, true, "pytest"),
-                                                    S(2, "presale-c8", "presale-pipeline", 72, 16 * 3600, false, ""),
-                                                    S(3, "mixing-ff", "mixing-outfit", 44, 10 * 3600, false, ""),
-                                                    S(4, "web-shop-2a", "web-shop", 118, 26 * 3600, false, ""),
-                                                    S(5, "mixing-5d", "mixing-outfit", 38, 20 * 60, false, "")],
-                                         leftovers: [Leftover(id: 10, command: "pnpm dev --port 3123", project: "kitemetric-web", cwd: "", footprintMB: 45, startedAt: now - 32 * 3600, ports: [3123], kind: "Next.js dev server", byAgent: false, projectLive: false, members: [("node", 45), ("next-server", 380)], tree: []),
-                                                     Leftover(id: 11, command: "python -m http.server 8198", project: "agent", cwd: "", footprintMB: 12, startedAt: now - 30 * 3600, ports: [8198], kind: "Python static server", byAgent: true, projectLive: false, members: [("Python", 12)], tree: []),
-                                                     Leftover(id: 12, command: "expo start --web --port 8081", project: "mixing-outfit", cwd: "", footprintMB: 52, startedAt: now - 8 * 3600, ports: [8081], kind: "Expo / Metro bundler", byAgent: false, projectLive: true, members: [("npm", 38), ("node", 14)], tree: [])],
-                                         others: [OtherApp(id: 100, name: "OrbStack", footprintMB: 5400, procs: 3, isApp: true), OtherApp(id: 101, name: "Google Chrome", footprintMB: 1300, procs: 55, isApp: true),
+                m.machine = MachineState(sessions: [S(1, "tokenpet-c0", "tokenpet", 1900, 0, true, "pytest"),
+                                                    S(2, "presale-c8", "presale-pipeline", 540, 16 * 3600, false, ""),
+                                                    S(3, "mixing-ff", "mixing-outfit", 480, 10 * 3600, false, ""),
+                                                    S(4, "web-shop-2a", "web-shop", 620, 26 * 3600, false, ""),
+                                                    S(5, "mixing-5d", "mixing-outfit", 410, 20 * 60, false, "")],
+                                         leftovers: [Leftover(id: 10, command: "pnpm dev --port 3123", project: "storefront", cwd: "", footprintMB: 640, startedAt: now - 32 * 3600, ports: [3123], kind: "Next.js dev server", byAgent: false, projectLive: false, members: [("node", 60), ("next-server", 580)], tree: []),
+                                                     Leftover(id: 11, command: "python -m http.server 8198", project: "agent", cwd: "", footprintMB: 38, startedAt: now - 30 * 3600, ports: [8198], exposed: [8198], kind: "Python static server", byAgent: true, projectLive: false, members: [("Python", 38)], tree: []),
+                                                     Leftover(id: 12, command: "expo start --web --port 8081", project: "mixing-outfit", cwd: "", footprintMB: 310, startedAt: now - 8 * 3600, ports: [8081], kind: "Expo / Metro bundler", byAgent: false, projectLive: true, members: [("npm", 40), ("node", 270)], tree: [])],
+                                         others: [OtherApp(id: 100, name: "OrbStack", footprintMB: 2100, procs: 3, isApp: true), OtherApp(id: 101, name: "Google Chrome", footprintMB: 1300, procs: 55, isApp: true),
                                                   OtherApp(id: 102, name: "Visual Studio Code", footprintMB: 507, procs: 40, isApp: true), OtherApp(id: 103, name: "mds_stores", footprintMB: 315, procs: 1, isApp: false)],
                                          ramGB: 16, swapUsedGB: 14.5, swapTotalGB: 15.4, freePct: 9, pressure: 2, scannedAt: now)
-                m.claudeSrv.extra = ["Quota tuần tiêu ở: Claude Code 88% · chat 12%", "Extra usage tháng: 3.20 / 50.00 USD"]
-                m.codexSrv.extra = ["Credits: 12.50", "Lượt reset để dành: 1"]
-                m.peek = Peek(text: "Claude · 5 giờ sắp hết (~28 phút)", level: 2)
+                m.claudeSrv.extra = [L("Weekly quota went to: Claude Code 88% · chat 12%", "Quota tuần tiêu ở: Claude Code 88% · chat 12%"), L("Extra usage this month: 3.20 / 50.00 USD", "Extra usage tháng: 3.20 / 50.00 USD")]
+                m.codexSrv.extra = ["Credits: 12.50", L("Saved resets: 1", "Lượt reset để dành: 1")]
+                // The heads-up line says exactly what the tile under it says: one forecast, one number.
+                let mins = m.insights.first { $0.limit.id == "claude.5h" }?.minutesToEmpty ?? 0
+                m.peek = Peek(text: L("Claude · 5 hours runs out in ~\(fmtDur(mins * 60))", "Claude · 5 giờ sẽ hết sau ~\(fmtDur(mins * 60))"), level: 2)
             }
             @MainActor func write<V: View>(_ name: String, _ v: V) {
                 let r = ImageRenderer(content: v.environment(\.colorScheme, .dark))
@@ -890,15 +964,35 @@ if args.contains("--dump") || args.contains("--snapshot") {
                 }
             }
             let geo = NotchGeo(notchW: 185, notchH: 32)
+            let stageBG = args.contains("--clear") ? Color.clear : Color(white: 0.55)   // --clear: transparent, for the website
             write("panel", ContentView(model: m, snapshot: true))
             write("glance", GlanceView(model: m, animate: false, forceDetails: true).padding(14).frame(width: 420).background(Color.black))
-            write("toast", ToastView(m: m.machine, suggestions: m.machine.suggestions(2), kind: .blob, onOpen: {}, onLater: {}).frame(width: ToastController.width))
+            write("toast", ToastView(m: m.machine, suggestions: m.machine.suggestions(2), onOpen: {}, onLater: {}).frame(width: ToastController.width))
             write("machine", MachineView(model: m, snapshot: true).frame(width: 700).background(Color(white: 0.13)))
-            write("notch-closed", NotchContent(model: m, mode: .closed, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(Color(white: 0.55)))
-            write("notch-peek", NotchContent(model: m, mode: .peek, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(Color(white: 0.55)))
-            write("notch-open", NotchContent(model: m, mode: .open, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(Color(white: 0.55)))
-            write("edge-tab", EdgeContent(model: m, open: false, right: true).padding(10).background(Color(white: 0.55)))
-            write("edge-open", EdgeContent(model: m, open: true, right: true).padding(10).background(Color(white: 0.55)))
+            write("notch-closed", NotchContent(model: m, mode: .closed, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(stageBG))
+            write("notch-peek", NotchContent(model: m, mode: .peek, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(stageBG))
+            write("notch-open", NotchContent(model: m, mode: .open, geo: geo, ears: true).padding(.horizontal, 20).padding(.bottom, 10).background(stageBG))
+            write("edge-tab", EdgeContent(model: m, open: false, right: true).padding(10).background(stageBG))
+            write("edge-open", EdgeContent(model: m, open: true, right: true).padding(10).background(stageBG))
+            // Onboarding has AppKit-backed controls (switches, radio group) that ImageRenderer skips: draw a real window.
+            _ = NSApplication.shared
+            for (k, opened) in [(0, false), (1, false), (1, true), (2, false)] {
+                for dark in [false, true] {
+                    let host = NSHostingController(rootView: OnboardingView(model: m, page: k, opened: opened, snapshot: true))
+                    let w = NSWindow(contentViewController: host)
+                    w.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                    w.setContentSize(NSSize(width: OnboardingView.size.width, height: OnboardingView.size.height))
+                    w.layoutIfNeeded(); w.displayIfNeeded()
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+                    if let v = w.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                        v.cacheDisplay(in: v.bounds, to: rep)
+                        let name = "onboarding-\(k + 1)\(opened ? "b" : "")\(dark ? "-dark" : "")"
+                        if let png = rep.representation(using: .png, properties: [:]) {
+                            try? png.write(to: dir.appendingPathComponent(name + ".png")); print("wrote \(name).png")
+                        }
+                    }
+                }
+            }
             let moods: [Mood] = [.calm, .busy, .worried, .alarmed, .empty, .sleeping]
             write("pets", VStack(spacing: 8) {
                 ForEach(PetKind.allCases, id: \.self) { kind in
@@ -913,7 +1007,60 @@ if args.contains("--dump") || args.contains("--snapshot") {
                     }
                 }
             }.padding(12).background(Color(white: 0.12)))
+            write("glyphs", HStack(spacing: 14) {
+                PetRing(color: claudeColor, used: 73, level: 1, mood: .worried, animate: false, size: 46, kind: .spark)
+                PetRing(color: codexColor, used: 21, level: 0, mood: .calm, animate: false, size: 46, kind: .knot)
+                PetRing(color: claudeColor, used: 73, level: 1, mood: .worried, animate: false, size: 24, kind: .spark)
+                PetRing(color: codexColor, used: 21, level: 0, mood: .calm, animate: false, size: 24, kind: .knot)
+            }.padding(12).background(Color.black))
+            // One per file, transparent, for the website.
+            for (k, name) in ["calm", "busy", "worried", "alarmed", "empty", "sleeping"].enumerated() {
+                write("pet-\(name)", PetView(color: claudeColor, mood: moods[k], kind: .blob, fullness: 1, animate: false, size: 96))
+                write("pet-\(name)-codex", PetView(color: codexColor, mood: moods[k], kind: .cat, fullness: 1, animate: false, size: 96))
+            }
         }
+    }
+    exit(0)
+}
+
+if let k = args.firstIndex(of: "--icon"), k + 1 < args.count {
+    // The app icon, 1024 px: the pet inside its quota ring on the notch's black. build.sh turns it into .icns.
+    MainActor.assumeIsolated {
+        // The app in one picture: the notch at the top of a dark screen, and under it the pet inside its quota
+        // ring. Same surface as the cards (near-black, lit from the top right by the pet's colour, a cooler glow
+        // opposite), with a rim lit from above like the system's glass icons.
+        let tile = RoundedRectangle(cornerRadius: 186, style: .continuous)
+        let icon = ZStack {
+            ZStack {
+                Color(red: 0.055, green: 0.055, blue: 0.07)
+                RadialGradient(colors: [claudeColor.opacity(0.75), claudeColor.opacity(0.18), .clear], center: UnitPoint(x: 0.92, y: 0.04), startRadius: 0, endRadius: 700)
+                RadialGradient(colors: [codexColor.opacity(0.5), codexColor.opacity(0.1), .clear], center: UnitPoint(x: 0.02, y: 1.0), startRadius: 0, endRadius: 560)
+                // the notch
+                NotchShape(top: 30, bottom: 44).fill(Color.black).frame(width: 330, height: 92).frame(maxHeight: .infinity, alignment: .top)
+                // the gauge and the pet
+                ZStack {
+                    Circle().stroke(Color.white.opacity(0.13), lineWidth: 50)
+                    Circle().trim(from: 0, to: 0.7)
+                        .stroke(LinearGradient(colors: [Color(red: 1.0, green: 0.72, blue: 0.5), claudeColor], startPoint: .topTrailing, endPoint: .bottomLeading),
+                                style: StrokeStyle(lineWidth: 50, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: claudeColor.opacity(0.55), radius: 26)
+                    PetView(color: claudeColor, mood: .calm, kind: .blob, fullness: 1, animate: false, size: 330, centered: true)
+                        .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
+                }
+                .frame(width: 470, height: 470).offset(y: 46)
+            }
+            .frame(width: 824, height: 824)
+            .clipShape(tile)
+            .overlay(tile.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.42), Color.white.opacity(0.06), Color.white.opacity(0.0)], startPoint: .top, endPoint: .bottom), lineWidth: 5))
+            .shadow(color: .black.opacity(0.32), radius: 22, y: 12)
+        }
+        .frame(width: 1024, height: 1024).environment(\.colorScheme, .dark)
+        let r = ImageRenderer(content: icon); r.scale = 1
+        if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: args[k + 1]))
+        } else { exit(1) }
     }
     exit(0)
 }

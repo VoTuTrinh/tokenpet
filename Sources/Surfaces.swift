@@ -5,6 +5,23 @@ import Cocoa
 import SwiftUI
 import Combine
 
+/// Hover timing. A pointer that only passes over (on its way to a tab or a menu) must not open anything: it
+/// crosses the 32 pt strip in well under a tenth of a second, so a rest of `openDelay` filters it out while
+/// still feeling immediate, and nothing opens with a mouse button down (not in the middle of a drag).
+/// Leaving closes after `closeDelay`, long enough to cross the gap back in. A click toggles at once.
+enum Hover {
+    static let openDelay = 0.16, closeDelay = 0.38
+    /// Run `open` if the pointer is still inside `frame` after the dwell and nothing is being dragged.
+    static func dwell(in frame: @escaping () -> NSRect, _ open: @escaping () -> Void) -> DispatchWorkItem {
+        let w = DispatchWorkItem {
+            guard NSEvent.pressedMouseButtons == 0, frame().insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) else { return }
+            open()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + openDelay, execute: w)
+        return w
+    }
+}
+
 // MARK: - Shapes
 
 /// Notch silhouette. `rect` is the body; the concave flares at the top corners are drawn *outside* it
@@ -21,8 +38,10 @@ struct NotchShape: Shape {
         let b = max(0, min(bottom, r.width / 2, r.height - t))
         let k: CGFloat = 0.4477        // 1 − κ, cubic approximation of a quarter circle
         var p = Path()
+        let s: CGFloat = 0.62          // how far the flare's handles reach: a soft S, not a hard quarter circle
         p.move(to: CGPoint(x: r.minX - t, y: r.minY))
-        p.addQuadCurve(to: CGPoint(x: r.minX, y: r.minY + t), control: CGPoint(x: r.minX, y: r.minY))
+        p.addCurve(to: CGPoint(x: r.minX, y: r.minY + t),
+                   control1: CGPoint(x: r.minX - t * (1 - s), y: r.minY), control2: CGPoint(x: r.minX, y: r.minY + t * (1 - s)))
         p.addLine(to: CGPoint(x: r.minX, y: r.maxY - b))
         p.addCurve(to: CGPoint(x: r.minX + b, y: r.maxY),
                    control1: CGPoint(x: r.minX, y: r.maxY - b * k), control2: CGPoint(x: r.minX + b * k, y: r.maxY))
@@ -30,34 +49,38 @@ struct NotchShape: Shape {
         p.addCurve(to: CGPoint(x: r.maxX, y: r.maxY - b),
                    control1: CGPoint(x: r.maxX - b * k, y: r.maxY), control2: CGPoint(x: r.maxX, y: r.maxY - b * k))
         p.addLine(to: CGPoint(x: r.maxX, y: r.minY + t))
-        p.addQuadCurve(to: CGPoint(x: r.maxX + t, y: r.minY), control: CGPoint(x: r.maxX, y: r.minY))
+        p.addCurve(to: CGPoint(x: r.maxX + t, y: r.minY),
+                   control1: CGPoint(x: r.maxX, y: r.minY + t * (1 - s)), control2: CGPoint(x: r.maxX + t * (1 - s), y: r.minY))
         p.closeSubpath()
         return p
     }
 }
 
-/// A tab hugging a screen edge: rounded on the side facing the screen, square on the edge.
+/// A tab growing out of a screen edge, the notch's shape turned on its side: convex corners towards the screen,
+/// and concave flares where it meets the edge (drawn outside `rect`, `flare` points above and below it).
 struct SideTabShape: Shape {
     var right: Bool
-    var r: CGFloat = 10
+    var r: CGFloat = 20
+    var flare: CGFloat = 16
     func path(in rc: CGRect) -> Path {
+        let b = rc.insetBy(dx: 0, dy: flare)                    // the body; the flares use the inset
+        let rr = min(r, b.width, b.height / 2), f = flare
+        let edge = right ? b.maxX : b.minX, inner = right ? b.minX : b.maxX
+        let d: CGFloat = right ? 1 : -1                           // direction from the body towards the edge
+        let s: CGFloat = 0.62, k: CGFloat = 0.4477               // flare handle reach; 1 − κ for the round corners
         var p = Path()
-        let rr = min(r, rc.width, rc.height / 2)
-        if right {
-            p.move(to: CGPoint(x: rc.maxX, y: rc.minY))
-            p.addLine(to: CGPoint(x: rc.minX + rr, y: rc.minY))
-            p.addQuadCurve(to: CGPoint(x: rc.minX, y: rc.minY + rr), control: CGPoint(x: rc.minX, y: rc.minY))
-            p.addLine(to: CGPoint(x: rc.minX, y: rc.maxY - rr))
-            p.addQuadCurve(to: CGPoint(x: rc.minX + rr, y: rc.maxY), control: CGPoint(x: rc.minX, y: rc.maxY))
-            p.addLine(to: CGPoint(x: rc.maxX, y: rc.maxY))
-        } else {
-            p.move(to: CGPoint(x: rc.minX, y: rc.minY))
-            p.addLine(to: CGPoint(x: rc.maxX - rr, y: rc.minY))
-            p.addQuadCurve(to: CGPoint(x: rc.maxX, y: rc.minY + rr), control: CGPoint(x: rc.maxX, y: rc.minY))
-            p.addLine(to: CGPoint(x: rc.maxX, y: rc.maxY - rr))
-            p.addQuadCurve(to: CGPoint(x: rc.maxX - rr, y: rc.maxY), control: CGPoint(x: rc.maxX, y: rc.maxY))
-            p.addLine(to: CGPoint(x: rc.minX, y: rc.maxY))
-        }
+        p.move(to: CGPoint(x: edge, y: b.minY - f))
+        p.addCurve(to: CGPoint(x: edge - d * f, y: b.minY),
+                   control1: CGPoint(x: edge, y: b.minY - f * (1 - s)), control2: CGPoint(x: edge - d * f * (1 - s), y: b.minY))
+        p.addLine(to: CGPoint(x: inner + d * rr, y: b.minY))
+        p.addCurve(to: CGPoint(x: inner, y: b.minY + rr),
+                   control1: CGPoint(x: inner + d * rr * k, y: b.minY), control2: CGPoint(x: inner, y: b.minY + rr * k))
+        p.addLine(to: CGPoint(x: inner, y: b.maxY - rr))
+        p.addCurve(to: CGPoint(x: inner + d * rr, y: b.maxY),
+                   control1: CGPoint(x: inner, y: b.maxY - rr * k), control2: CGPoint(x: inner + d * rr * k, y: b.maxY))
+        p.addLine(to: CGPoint(x: edge - d * f, y: b.maxY))
+        p.addCurve(to: CGPoint(x: edge, y: b.maxY + f),
+                   control1: CGPoint(x: edge - d * f * (1 - s), y: b.maxY), control2: CGPoint(x: edge, y: b.maxY + f * (1 - s)))
         p.closeSubpath()
         return p
     }
@@ -67,7 +90,8 @@ struct SideTabShape: Shape {
 
 struct NotchGeo {
     var notchW: CGFloat, notchH: CGFloat
-    var earL: CGFloat = 38, earR: CGFloat = 38     // (mascot in ring) notch (mascot in ring): Claude left, Codex right
+    var earL: CGFloat { Prefs.shared.notchNumbers && Prefs.shared.pet ? 62 : 38 }
+    var earR: CGFloat { earL }     // (mascot in ring) notch (mascot in ring): Claude left, Codex right
     static let openW: CGFloat = 420, openH: CGFloat = 620, peekH: CGFloat = 28, peekMinW: CGFloat = 320
     func bodyWidth(_ mode: NotchMode, ears: Bool) -> CGFloat {
         let n = CGFloat(Prefs.shared.tools.count)
@@ -77,8 +101,8 @@ struct NotchGeo {
         case .open: return NotchGeo.openW
         }
     }
-    func flare(_ mode: NotchMode, ears: Bool) -> CGFloat { mode == .closed ? (ears ? 7 : 0) : 12 }
-    func bottomRadius(_ mode: NotchMode) -> CGFloat { mode == .closed ? 12 : 20 }
+    func flare(_ mode: NotchMode, ears: Bool) -> CGFloat { mode == .closed ? (ears ? 10 : 0) : 18 }
+    func bottomRadius(_ mode: NotchMode) -> CGFloat { mode == .closed ? 13 : (mode == .peek ? 16 : 26) }
     /// Window size: body plus the flares, plus a pixel of slack.
     func windowSize(_ mode: NotchMode, ears: Bool) -> CGSize {
         let h: CGFloat = mode == .closed ? notchH : (mode == .peek ? notchH + NotchGeo.peekH : NotchGeo.openH)
@@ -94,6 +118,7 @@ struct NotchContent: View {
     var mode: NotchMode
     var geo: NotchGeo
     var ears: Bool
+    var hot = false               // pointer is over the closed notch: answer at once, open after the dwell
     var onHover: ((Bool) -> Void)? = nil
     var onTap: (() -> Void)? = nil
 
@@ -107,7 +132,8 @@ struct NotchContent: View {
                 if tools.count > 1 { ear(model.summary(tools[1]), petFirst: false).frame(width: geo.earR) }
             }
             .frame(height: geo.notchH)
-            .opacity(mode == .open || !showEars ? 0 : 1)
+            .opacity(mode == .open || !showEars ? 0 : (hot || mode == .peek ? 1 : 0.82))
+            .animation(.easeOut(duration: 0.1), value: hot)
             if mode == .peek, let p = model.peek {
                 HStack(spacing: 7) {
                     Circle().fill(levelColor(p.level == 3 ? 0 : p.level)).frame(width: 6, height: 6)
@@ -131,9 +157,17 @@ struct NotchContent: View {
         .onTapGesture { onTap?() }
     }
 
-    /// One tool per ear: the mascot inside its ring (arc = % used, colour = level). No numbers; nothing moves.
+    /// One tool per ear: the mascot inside its ring (arc = % used, colour = level) and the number on the outer side,
+    /// so the state reads without opening anything. Nothing moves.
     @ViewBuilder func ear(_ s: ToolSummary, petFirst: Bool) -> some View {
-        PetRing(color: s.color, used: s.tight?.used, level: s.tight?.level ?? 0, mood: s.mood, animate: false, size: 24, showPet: prefs.pet, kind: s.kind)
+        let ring = PetRing(color: s.color, used: s.tight?.used, level: s.tight?.level ?? 0, mood: s.mood, animate: false, size: 24, showPet: prefs.pet, kind: s.kind)
+        let lvl = s.tight?.level ?? 0
+        let num = Text(s.tight.map { "\(Int($0.used.rounded()))%" } ?? "–")
+            .font(.system(size: 10.5, weight: .semibold, design: .rounded)).monospacedDigit()
+            .foregroundStyle(lvl > 0 ? levelColor(lvl) : Color.white.opacity(0.85)).lineLimit(1).fixedSize()
+        HStack(spacing: 4) {
+            if !prefs.pet || !prefs.notchNumbers { ring } else if petFirst { num; ring } else { ring; num }
+        }
     }
 }
 
@@ -159,6 +193,8 @@ struct MiniRing: View {
 /// Owns the notch panel on one screen: hover → open, alerts → peek, Reduce Motion → no animation.
 final class NotchController: ObservableObject {
     @Published var mode: NotchMode = .closed
+    @Published var hot = false
+    private var openWork: DispatchWorkItem?
     let geo: NotchGeo
     let notch: NSRect            // screen coordinates
     let screenTop: CGFloat
@@ -188,7 +224,7 @@ final class NotchController: ObservableObject {
         }
     }
     /// The hosting view's root holds this controller, so deinit never runs on its own: close explicitly.
-    func close() { collapseWork?.cancel(); sub = nil; panel.contentView = nil; panel.close() }
+    func close() { collapseWork?.cancel(); openWork?.cancel(); sub = nil; panel.contentView = nil; panel.close() }
 
     var ears: Bool { Prefs.shared.notchEarsAlways }
 
@@ -199,24 +235,36 @@ final class NotchController: ObservableObject {
 
     func hover(_ inside: Bool) {
         collapseWork?.cancel(); collapseWork = nil
-        if inside { go(.open); return }
+        openWork?.cancel(); openWork = nil
+        hot = inside
+        if inside {
+            if mode != .open { openWork = Hover.dwell(in: { [weak self] in self?.panel.frame ?? .zero }) { [weak self] in self?.go(.open) } }
+            return
+        }
+        guard mode == .open else { return }
         let w = DispatchWorkItem { [weak self] in
             guard let s = self else { return }
             s.go(s.model?.peek == nil ? .closed : .peek)
         }
         collapseWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Hover.closeDelay, execute: w)
     }
-    func tap() { mode == .open ? go(model?.peek == nil ? .closed : .peek) : go(.open) }
+    /// A click is a decision: it opens or closes at once, and a pending hover-open is dropped so that
+    /// closing by click is not undone by the pointer still resting there.
+    func tap() {
+        openWork?.cancel(); openWork = nil; collapseWork?.cancel(); collapseWork = nil
+        mode == .open ? go(model?.peek == nil ? .closed : .peek) : go(.open)
+    }
 
     /// Grow the window before the shape expands, shrink it after the shape has collapsed.
     func go(_ m: NotchMode) {
         guard m != mode else { return }
+        if m == .open { NotificationCenter.default.post(name: .glanceOpened, object: nil) }
         let from = frame(mode), to = frame(m)
         let grow = to.width * to.height > from.width * from.height
         if grow { panel.setFrame(to, display: false) }
         let animated = Prefs.shared.transitions
-        withAnimation(animated ? .spring(response: 0.32, dampingFraction: 0.86) : nil) { mode = m }
+        withAnimation(animated ? .spring(response: 0.3, dampingFraction: 0.9) : nil) { mode = m }
         if !grow {
             DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.4 : 0.02)) { [weak self] in
                 guard let s = self, s.mode == m else { return }
@@ -233,7 +281,7 @@ struct NotchRoot: View {
     @ObservedObject var model: Model
     @ObservedObject var prefs = Prefs.shared
     var body: some View {
-        NotchContent(model: model, mode: ctl.mode, geo: ctl.geo, ears: prefs.notchEarsAlways,
+        NotchContent(model: model, mode: ctl.mode, geo: ctl.geo, ears: prefs.notchEarsAlways, hot: ctl.hot,
                      onHover: { ctl.hover($0) }, onTap: { ctl.tap() })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -246,9 +294,12 @@ struct EdgeContent: View {
     @ObservedObject var prefs = Prefs.shared
     var open: Bool
     var right: Bool
+    var hot = false
     var onHover: ((Bool) -> Void)? = nil
     var onTap: (() -> Void)? = nil
-    static let tabW: CGFloat = 26, tabH: CGFloat = 60, cardW: CGFloat = 424
+    static let tabW: CGFloat = 46, flare: CGFloat = 16, cardW: CGFloat = 424
+    /// One block per tool (24 pt ring + its number), 10 pt apart, 12 pt of air at each end, plus the two flares.
+    static var tabH: CGFloat { let n = CGFloat(max(1, Prefs.shared.tools.count)); return n * 38 + (n - 1) * 12 + 28 + 2 * flare }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -258,20 +309,26 @@ struct EdgeContent: View {
                     GlanceView(model: model, animate: prefs.animates)
                         .padding(14)
                         .frame(width: EdgeContent.cardW)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.94)))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+                        .floatingSurface()
                         .padding(right ? .trailing : .leading, 6)
                         .transition(.move(edge: right ? .trailing : .leading).combined(with: .opacity))
                 } else {
-                    // Two mini rings, Claude over Codex: arc = % used, colour = level. Hover for the numbers.
-                    VStack(spacing: 6) {
+                    // One ring per tool with the pet inside and the number under it: readable from across the
+                    // screen without opening anything. Arc = % used, colour = level.
+                    VStack(spacing: 12) {
                         ForEach(prefs.tools, id: \.self) { tool in
                             let t = model.summary(tool)
-                            PetRing(color: t.color, used: t.tight?.used, level: t.tight?.level ?? 0, mood: t.mood, animate: false, size: 22, showPet: prefs.pet, kind: t.kind)
+                            VStack(spacing: 2) {
+                                PetRing(color: t.color, used: t.tight?.used, level: t.tight?.level ?? 0, mood: t.mood, animate: false, size: 24, showPet: prefs.pet, kind: t.kind)
+                                Text(t.tight.map { "\(Int($0.used.rounded()))%" } ?? "–")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .rounded)).monospacedDigit()
+                                    .foregroundStyle((t.tight?.level ?? 0) > 0 ? levelColor(t.tight!.level) : Color.white.opacity(0.82))
+                                    .frame(height: 12)
+                            }
                         }
                     }
                     .frame(width: EdgeContent.tabW, height: EdgeContent.tabH)
-                    .background(SideTabShape(right: right).fill(Color.black.opacity(0.88)))
+                    .background(SideTabShape(right: right, flare: EdgeContent.flare).fill(Color.black))
                     .transition(.opacity)
                 }
             }
@@ -286,6 +343,8 @@ struct EdgeContent: View {
 
 final class EdgeController: ObservableObject {
     @Published var open = false
+    @Published var hot = false
+    private var openWork: DispatchWorkItem?
     let panel: NSPanel
     let right: Bool
     let edgeX: CGFloat, tabTop: CGFloat, screenBottom: CGFloat
@@ -308,7 +367,7 @@ final class EdgeController: ObservableObject {
         panel.setFrame(frame(false), display: false)
         panel.orderFrontRegardless()
     }
-    func close() { collapseWork?.cancel(); panel.contentView = nil; panel.close() }
+    func close() { collapseWork?.cancel(); openWork?.cancel(); panel.contentView = nil; panel.close() }
 
     func frame(_ open: Bool) -> NSRect {
         let w = open ? EdgeContent.cardW + 8 : EdgeContent.tabW
@@ -317,14 +376,21 @@ final class EdgeController: ObservableObject {
     }
     func hover(_ inside: Bool) {
         collapseWork?.cancel(); collapseWork = nil
-        if inside { go(true); return }
+        openWork?.cancel(); openWork = nil
+        hot = inside
+        if inside {
+            if !open { openWork = Hover.dwell(in: { [weak self] in self?.panel.frame ?? .zero }) { [weak self] in self?.go(true) } }
+            return
+        }
+        guard open else { return }
         let w = DispatchWorkItem { [weak self] in self?.go(false) }
         collapseWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Hover.closeDelay, execute: w)
     }
+    func tap() { openWork?.cancel(); openWork = nil; collapseWork?.cancel(); collapseWork = nil; go(!open) }
     func go(_ o: Bool) {
         guard o != open else { return }
-        if o { panel.setFrame(frame(true), display: false) }
+        if o { panel.setFrame(frame(true), display: false); NotificationCenter.default.post(name: .glanceOpened, object: nil) }
         let animated = Prefs.shared.transitions
         withAnimation(animated ? .spring(response: 0.32, dampingFraction: 0.86) : nil) { open = o }
         if !o {
@@ -340,7 +406,7 @@ struct EdgeRoot: View {
     @ObservedObject var ctl: EdgeController
     @ObservedObject var model: Model
     var body: some View {
-        EdgeContent(model: model, open: ctl.open, right: ctl.right, onHover: { ctl.hover($0) }, onTap: { ctl.go(!ctl.open) })
+        EdgeContent(model: model, open: ctl.open, right: ctl.right, hot: ctl.hot, onHover: { ctl.hover($0) }, onTap: { ctl.tap() })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
@@ -371,7 +437,7 @@ final class SurfaceManager {
     func apply() {
         let p = Prefs.shared
         let screens = NSScreen.screens.map { "\($0.frame)\($0.safeAreaInsets.top)" }.joined()
-        let sig = "\(p.notch)\(p.edgeDock)\(p.edgeRight)\(p.tools)\(screens)"
+        let sig = "\(p.notchNumbers)\(p.pet)\(p.notch)\(p.edgeDock)\(p.edgeRight)\(p.tools)\(screens)"
         if sig != signature { signature = sig; rebuild() } else { notches.forEach { $0.refit() } }
     }
 
@@ -383,6 +449,8 @@ final class SurfaceManager {
             return (p.notch && hasNotch, p.edgeDock)
         }
     }
+    /// QA: open whatever collapsed surface exists, as a resting pointer would.
+    func demoOpen() { if let e = edges.first { e.go(true) } else { notches.first?.go(.open) } }
     func rebuild() {
         notches.forEach { $0.close() }; edges.forEach { $0.close() }
         notches.removeAll(); edges.removeAll()

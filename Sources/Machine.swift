@@ -40,6 +40,7 @@ struct Leftover: Identifiable {
     var footprintMB: Double
     var startedAt: Double
     var ports: [Int]
+    var exposed: [Int] = []    // the ports among them bound to every interface (0.0.0.0 / ::): reachable from the network
     var kind: String           // what it is, from the command and its tree: "Next.js dev server", "Expo / Metro"
     var byAgent: Bool          // started from an agent scratchpad: certainly the agent's
     var projectLive: Bool      // a session in that project is still open: maybe still wanted
@@ -72,8 +73,8 @@ struct MachineState {
     /// The three biggest things worth closing, as sentences: "Đóng session presale-c8 · ngủ 16h".
     func suggestions(_ hours: Double, limit: Int = 3) -> [(String, Double)] {
         let c = cleanable(hours)
-        var items = c.sessions.map { ("Đóng session \($0.name) · ngủ \(fmtAge($0.idleFor))", $0.footprintMB) }
-        items += c.leftovers.map { ("Dọn \($0.command)" + ($0.kind.isEmpty ? "" : " (\($0.kind))") + " · \(fmtAge($0.age))", $0.footprintMB) }
+        var items = c.sessions.map { (L("Close session \($0.name) · asleep \(fmtAge($0.idleFor))", "Đóng session \($0.name) · ngủ \(fmtAge($0.idleFor))"), $0.footprintMB) }
+        items += c.leftovers.map { (L("Stop \($0.command)", "Dọn \($0.command)") + ($0.kind.isEmpty ? "" : " (\($0.kind))") + " · \(fmtAge($0.age))", $0.footprintMB) }
         return Array(items.sorted { $0.1 > $1.1 }.prefix(limit))
     }
     /// Compatibility with the older per-project summary (Settings footer, --bench).
@@ -249,8 +250,8 @@ final class ProcessCensus {
             var main = pid
             while ProcessCensus.shells.contains(nodes[main]?.name ?? ""), let c = kids[main], c.count == 1 { main = c[0] }
             let label = shortCommand(procArgs(main), path: nodes[main]?.path ?? nd.path)
-            var ports: [Int] = []
-            for p in tree { for port in listenPorts(p) where !ports.contains(port) { ports.append(port) } }
+            var ports: [Int] = [], open: [Int] = []
+            for p in tree { for (port, wide) in listenPorts(p) where !ports.contains(port) { ports.append(port); if wide { open.append(port) } } }
             let mainCwd = procCwd(main)
             let where_ = mainCwd.isEmpty ? cwd : mainCwd
             let mem = members(tree)
@@ -260,7 +261,7 @@ final class ProcessCensus {
             _ = cpu(tree)
             st.leftovers.append(Leftover(id: pid, command: label, project: byAgent ? "agent" : (root.split(separator: "/").last.map(String.init) ?? "?"),
                                          cwd: where_, footprintMB: tree.reduce(0) { $0 + (nodes[$1]?.footprintMB ?? 0) }, startedAt: Double(nd.start),
-                                         ports: ports.sorted(), kind: ProcessCensus.kind(label, members: mem.map { $0.0 }),
+                                         ports: ports.sorted(), exposed: open.sorted(), kind: ProcessCensus.kind(label, members: mem.map { $0.0 }),
                                          byAgent: byAgent, projectLive: live, members: mem,
                                          tree: tree.map { ProcRef(pid: $0, start: nodes[$0]?.start ?? 0) }))
         }
@@ -393,12 +394,13 @@ final class ProcessCensus {
         }
         return out
     }
-    private func listenPorts(_ pid: pid_t) -> [Int] {
+    /// Listening TCP ports of one process, and whether each is bound to every interface rather than loopback.
+    func listenPorts(_ pid: pid_t) -> [(Int, Bool)] {
         let bufSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
         guard bufSize > 0 else { return [] }
         var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bufSize) / MemoryLayout<proc_fdinfo>.size + 8)
         let got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * MemoryLayout<proc_fdinfo>.size))
-        var ports: [Int] = []
+        var ports: [(Int, Bool)] = []
         for fd in fds.prefix(Int(max(0, got)) / MemoryLayout<proc_fdinfo>.size) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
             var si = socket_fdinfo()
             guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &si, Int32(MemoryLayout<socket_fdinfo>.size)) == MemoryLayout<socket_fdinfo>.size,
@@ -406,7 +408,13 @@ final class ProcessCensus {
             let tcp = si.psi.soi_proto.pri_tcp
             guard tcp.tcpsi_state == Int32(TSI_S_LISTEN) else { continue }
             let p = Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: UInt32(bitPattern: tcp.tcpsi_ini.insi_lport))))
-            if p > 0 && !ports.contains(p) { ports.append(p) }
+            guard p > 0, !ports.contains(where: { $0.0 == p }) else { continue }
+            // Wildcard bind = all-zero local address (INADDR_ANY, or :: for a dual-stack socket).
+            let ini = tcp.tcpsi_ini
+            let v4 = ini.insi_vflag & UInt8(INI_IPV4) != 0 && ini.insi_vflag & UInt8(INI_IPV6) == 0
+            let wide: Bool = v4 ? ini.insi_laddr.ina_46.i46a_addr4.s_addr == 0
+                                : withUnsafeBytes(of: ini.insi_laddr.ina_6) { $0.allSatisfy { $0 == 0 } }
+            ports.append((p, wide))
         }
         return ports
     }
@@ -444,7 +452,7 @@ final class ProcessCensus {
 
 /// "16h", "1d 8h", "35 phút"
 func fmtAge(_ s: Double) -> String {
-    if s < 3600 { return "\(max(1, Int(s / 60))) phút" }
+    if s < 3600 { return L("\(max(1, Int(s / 60))) min", "\(max(1, Int(s / 60))) phút") }
     if s < 86400 { return "\(Int(s / 3600))h" }
     return "\(Int(s / 86400))d \(Int(s.truncatingRemainder(dividingBy: 86400) / 3600))h"
 }

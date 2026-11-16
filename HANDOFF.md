@@ -59,3 +59,27 @@ Problem the user brought: AI coding tools leave the machine slow and swapping. M
 - `build.sh` deletes `build/TokenPet.app`; quit the running instance first. Only one GUI instance at a time (both would write `quota-history.jsonl`).
 - Iterate with `swiftc -O -swift-version 5 -target arm64-apple-macos13.0 Sources/*.swift -o <scratch>`; `--selftest` must stay ALL PASS.
 - Do not install hooks in `~/.claude/settings.json`.
+
+## Session 4: making it shippable (2026-11-15)
+- `Onboarding.swift`: three pages (welcome + detected tools, "try it" that waits for `.glanceOpened`, quota source + notifications + login item). Shown once (`onboarded` default), closing = skip. Designed against the HIG pages in github.com/dickwu/apple-design-skill (onboarding, privacy, launching). Pets in it are static: animated they cost 12–24% CPU while the window was open.
+- `Lifecycle.swift`: `AppInfo` (version, `TPRepository`, `TPHomepage` from Info.plist), `StatuslineHook` (Swift port of the two scripts; rewrites `~/.claude/settings.json` with sorted keys, backup kept), `UpdateCheck` (manual, GitHub releases), `Uninstaller`.
+- Notifications are no longer requested at launch (`Notifier.requestPermission`).
+- `build.sh`: universal binary, icon rendered by `--icon`, `VERSION` file. `scripts/package.sh`, `install.sh`, `uninstall.sh`, `site/`, two GitHub workflows.
+- `--snapshot` also writes `onboarding-*.png` (real offscreen window, light and dark).
+- Not done: no GitHub repo/remote exists yet (links assume `VoTuTrinh/tokenpet`), no Developer ID / notarization, no LICENSE, UI is Vietnamese only. Not exercised by hand: the Keychain prompt after "Xong", the notification prompt, "Gỡ TokenPet…" from the UI, the login item.
+
+## Session 5: repositioning, English, defaults, competitor parity (2026-11-16)
+The owner asked for decisions from research and from the end user's point of view, not from their earlier preferences ("k nên bias quá vào ý của tôi trước đó"). Several session 1–4 decisions above are therefore reversed; this section wins where they disagree.
+- **Positioning:** lead with what agents hold on the Mac (fresh, under-served pain; claude-code issues #33947 and #1935), quota second (commodity: CodexBar, AI Usage, SessionWatcher, Lancetta, Vibe Island…). Lancetta is the one tool that also combines quota with reclaiming memory: never claim "only".
+- **Language:** `Sources/L10n.swift`, `L("English", "Tiếng Việt")` at every user-visible string; English default, Vietnamese when it is the Mac's first language, `Prefs.lang` pins. `--selftest` pins Vietnamese because its checks match on the Vietnamese wording. Limit labels and forecast headlines are built when data is ingested, so a language switch reaches them on the next refresh.
+- **Defaults (reversed):** edge tab off unless no screen has a notch, menu bar item off (shown only when nothing else can show: `Prefs.menuBarVisible`), no sound in "Balanced". Selftest section E checks a clean defaults domain. An existing install with no stored value for these keys picks up the new defaults.
+- **Hover:** `Hover` in Surfaces.swift: 0.16 s dwell (0.3 s felt laggy to the owner: "k còn mượt"), not while a mouse button is down, 0.38 s to close, click toggles. Not exercised by hand with a real pointer.
+- **Numbers on collapsed surfaces:** the edge tab has a number under each ring. At the notch the number is `Prefs.notchNumbers`, off by default: on a real screen the 62 pt ears covered the first status item on a full menu bar (seen in a capture), so the default stays 38 pt.
+- **Forecast in the glance (reversed):** `StatTile.verdict`.
+- **Shapes:** `NotchShape` / `SideTabShape` use cubic flares (10 closed, 18 open; edge tab 16), panel radius 26 with cards at 12 (`Surface`).
+- **Glass:** `floatingSurface()` = `.glassEffect(.regular.tint(black 0.68))` on macOS 26+, opaque black before; never on the notch panel, never on cards (HIG Materials: no Liquid Glass in the content layer). `Surface.flat` turns it off for `--snapshot`. Seen once on a real screen for the menu bar panel at tint 0.55; not re-checked at 0.68, not checked at the ends of the system transparency slider, not seen for the edge card or the toast.
+- **Mascot:** the owner rejected a redesign ("mascot xấu") and four alternative directions, and kept the original four pets. Two neutral marks (`PetKind.spark`, `.knot`) were added as options; they are our own drawings, not vendor logos.
+- **Settings:** seven decisions, then "Advanced" (`SettingsView.advancedSections`). `NotchStyle` is gone; `Place` is notch / menu bar / both.
+- **Mac window:** two-line rows, evidence under the chevron (`evidence(_:)`), colours in `MachineGroup`, `MachineState.pressureWord`, `Leftover.exposed` from the socket's local address (not yet compared with `lsof` on a real wildcard listener), `Model.freed`.
+- **Site:** `site/index.html` is one file, English in the markup and Vietnamese in the `VI` table; screenshots per language in `site/assets/<lang>/` from `--snapshot --fake --clear --lang`. The notch ratios in the CSS (`.shot.closed`, `.shot.alert`, `--nw`) come from the PNG widths: recompute them when the ear width changes.
+- **Still open:** no GitHub repo (download links are dead), no LICENSE, no notarization; pause/undo for cleanup, history chart and plan badge (competitors have them); fullscreen behaviour of the notch panel; README screenshots.

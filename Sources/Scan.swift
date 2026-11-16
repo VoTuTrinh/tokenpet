@@ -47,7 +47,7 @@ func fmtWhen(_ t: Double) -> String {
     let d = Date(timeIntervalSince1970: t)
     if Calendar.current.isDateInToday(d) { return fmtClock(t) }
     let wd = Calendar.current.component(.weekday, from: d)   // 1 = Sunday
-    return (wd == 1 ? "CN" : "T\(wd)") + " " + fmtClock(t)
+    return L(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][wd - 1], wd == 1 ? "CN" : "T\(wd)") + " " + fmtClock(t)
 }
 let supportDir: URL = {
     let d = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/TokenPet")
@@ -156,7 +156,7 @@ final class Scanner {
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let rl = o["rate_limits"] as? [String: Any] else { return }
         claudeRateMtime = mt
-        for (k, id, label, win) in [("five_hour", "claude.5h", "5 giờ", 5 * 3600.0), ("seven_day", "claude.week", "Tuần · mọi model", 7 * 86400.0)] {
+        for (k, id, label, win) in [("five_hour", "claude.5h", L("5 hours", "5 giờ"), 5 * 3600.0), ("seven_day", "claude.week", L("Week · all models", "Tuần · mọi model"), 7 * 86400.0)] {
             guard let w = rl[k] as? [String: Any], let u = (w["used_percentage"] as? NSNumber)?.doubleValue else { continue }
             newLimits.append(Limit(id: id, tool: "claude", label: label, used: u, resetsAt: Server.time(w["resets_at"]),
                                    windowSec: win, source: "statusline", observedAt: mt))
@@ -333,7 +333,7 @@ final class Scanner {
                 let win = mins > 0 ? mins * 60 : (k == "primary" ? 18000 : 604800)
                 let isWeek = win >= 86400
                 newLimits.append(Limit(id: "\(prefix).\(isWeek ? "week" : "5h")", tool: "codex",
-                                       label: name + (isWeek ? "Tuần" : "5 giờ"), used: u,
+                                       label: name + (isWeek ? L("Week", "Tuần") : L("5 hours", "5 giờ")), used: u,
                                        resetsAt: (w["resets_at"] as? NSNumber)?.doubleValue ?? 0,
                                        windowSec: win, source: "log", observedAt: ts))
             }

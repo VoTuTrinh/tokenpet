@@ -6,12 +6,12 @@ enum Mood: Equatable {
     case calm, busy, worried, alarmed, empty, sleeping
     var caption: String {
         switch self {
-        case .calm: return "ổn"
-        case .busy: return "đang chạy"
-        case .worried: return "cần để ý"
-        case .alarmed: return "sắp hết"
-        case .empty: return "hết, chờ reset"
-        case .sleeping: return "nghỉ"
+        case .calm: return L("fine", "ổn")
+        case .busy: return L("working", "đang chạy")
+        case .worried: return L("watch out", "cần để ý")
+        case .alarmed: return L("almost out", "sắp hết")
+        case .empty: return L("out, waiting for reset", "hết, chờ reset")
+        case .sleeping: return L("resting", "nghỉ")
         }
     }
 }
@@ -57,7 +57,7 @@ struct PetView: View {
     private func bodyPath(_ b: CGRect) -> Path {
         var p = Path()
         switch kind {
-        case .blob:
+        case .blob, .spark, .knot:
             p.addRoundedRect(in: b, cornerSize: CGSize(width: min(b.width, b.height) * 0.45, height: min(b.width, b.height) * 0.45))
         case .cat:
             p.addRoundedRect(in: b, cornerSize: CGSize(width: b.width * 0.3, height: b.width * 0.3))
@@ -87,8 +87,30 @@ struct PetView: View {
         return p
     }
 
+    /// A neutral mark instead of a pet: a spark (many assistants use one) or a hexagonal knot. Our own drawings,
+    /// not anyone's logo. White; dimmed when the tool is resting or out.
+    private func glyph(_ g: inout GraphicsContext, _ sz: CGSize) {
+        let c = CGPoint(x: sz.width / 2, y: sz.height / 2), r = min(sz.width, sz.height) * 0.46
+        let ink = Color.white.opacity(mood == .sleeping || mood == .empty ? 0.45 : 0.95)
+        var p = Path()
+        if kind == .spark {
+            for k in 0..<8 {
+                let a = Double(k) * .pi / 4, len = k % 2 == 0 ? r : r * 0.72
+                p.move(to: CGPoint(x: c.x + cos(a) * r * 0.2, y: c.y + sin(a) * r * 0.2))
+                p.addLine(to: CGPoint(x: c.x + cos(a) * len, y: c.y + sin(a) * len))
+            }
+            g.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: max(1.4, r * 0.2), lineCap: .round))
+        } else {
+            let pts = (0..<6).map { k -> CGPoint in let a = Double(k) * .pi / 3 - .pi / 2; return CGPoint(x: c.x + cos(a) * r, y: c.y + sin(a) * r) }
+            p.addLines(pts); p.closeSubpath()
+            for k in stride(from: 1, to: 6, by: 2) { p.move(to: c); p.addLine(to: pts[k]) }
+            g.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: max(1.3, r * 0.17), lineCap: .round, lineJoin: .round))
+        }
+    }
+
     private func draw(_ g: inout GraphicsContext, _ sz: CGSize, _ t: Double?) {
         let w = sz.width, h = sz.height
+        if kind.isGlyph { glyph(&g, sz); return }
         let time = t ?? 0
         let breathe = t == nil ? 0 : sin(time * (mood == .busy ? 5 : 2)) * 0.025
         let shake = (t != nil && mood == .alarmed) ? sin(time * 28) * w * 0.02 : 0

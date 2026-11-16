@@ -62,11 +62,11 @@ enum Server {
         }
         guard let d = data, let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let oa = o["claudeAiOauth"] as? [String: Any], let tok = oa["accessToken"] as? String else {
-            return (nil, allowUI ? "Chưa có quyền đọc login Claude (Keychain)" : "Cần quyền Keychain — bấm Làm mới")
+            return (nil, allowUI ? L("No access to the Claude login yet (Keychain)", "Chưa có quyền đọc login Claude (Keychain)") : L("Keychain access needed: click Refresh", "Cần quyền Keychain — bấm Làm mới"))
         }
         let exp = time(oa["expiresAt"])
         if exp > 0 && exp < Date().timeIntervalSince1970 {
-            return (nil, "Token Claude hết hạn — mở Claude Code là tự làm mới")
+            return (nil, L("Claude token expired: open Claude Code to renew it", "Token Claude hết hạn — mở Claude Code là tự làm mới"))
         }
         return (tok, nil)
     }
@@ -79,10 +79,10 @@ enum Server {
                                         headers: ["Authorization": "Bearer \(token)",
                                                   "anthropic-beta": "oauth-2025-04-20",
                                                   "User-Agent": "TokenPet"])
-        if code == 429 { r.error = "Server Claude báo gọi quá dày (429)"; r.retryAfter = retryAfter(hdr) ?? 600; return r }
-        if code == 401 || code == 403 { r.error = "Token Claude bị từ chối — mở Claude Code để làm mới"; return r }
+        if code == 429 { r.error = L("Claude's server says too many requests (429)", "Server Claude báo gọi quá dày (429)"); r.retryAfter = retryAfter(hdr) ?? 600; return r }
+        if code == 401 || code == 403 { r.error = L("Claude token rejected: open Claude Code to renew it", "Token Claude bị từ chối — mở Claude Code để làm mới"); return r }
         guard code == 200, let d = data, let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
-            r.error = "Server Claude lỗi (\(code))"; return r
+            r.error = L("Claude server error (\(code))", "Server Claude lỗi (\(code))"); return r
         }
         r.raw = o
         let now = Date().timeIntervalSince1970
@@ -95,10 +95,10 @@ enum Server {
             r.limits.append(Limit(id: id, tool: "claude", label: label, used: u, resetsAt: time(w["resets_at"]),
                                   windowSec: win, source: "server", observedAt: now))
         }
-        add("five_hour", "claude.5h", "5 giờ", 5 * 3600)
-        add("seven_day", "claude.week", "Tuần · mọi model", 7 * 86400)
-        add("seven_day_sonnet", "claude.week.sonnet", "Tuần · Sonnet", 7 * 86400)
-        add("seven_day_opus", "claude.week.opus", "Tuần · Opus", 7 * 86400)
+        add("five_hour", "claude.5h", L("5 hours", "5 giờ"), 5 * 3600)
+        add("seven_day", "claude.week", L("Week · all models", "Tuần · mọi model"), 7 * 86400)
+        add("seven_day_sonnet", "claude.week.sonnet", L("Week · Sonnet", "Tuần · Sonnet"), 7 * 86400)
+        add("seven_day_opus", "claude.week.opus", L("Week · Opus", "Tuần · Opus"), 7 * 86400)
         // Every entry in limits[]: model-scoped weeklies (Fable…) and any kind we don't map yet.
         var seenScoped = Set<String>()
         if let arr = o["limits"] as? [[String: Any]] {
@@ -107,19 +107,19 @@ enum Server {
                 if kind == "weekly_all" && o["seven_day"] is [String: Any] { continue }
                 let weekly = (l["group"] as? String) == "weekly" || kind.hasPrefix("weekly")
                 var id = "claude.\(kind)", label = kind
-                if kind == "weekly_all" { id = "claude.week"; label = "Tuần" }
+                if kind == "weekly_all" { id = "claude.week"; label = L("Week", "Tuần") }
                 if kind == "weekly_scoped" {
                     let scope = l["scope"] as? [String: Any]
                     let model = (scope?["model"] as? [String: Any])?["display_name"] as? String ?? "?"
                     id = "claude.week." + model.lowercased().replacingOccurrences(of: " ", with: "-")
-                    label = "Tuần · \(model)"; seenScoped.insert(model.lowercased())
+                    label = L("Week · \(model)", "Tuần · \(model)"); seenScoped.insert(model.lowercased())
                 }
                 r.limits.append(Limit(id: id, tool: "claude", label: label, used: u, resetsAt: time(l["resets_at"]),
                                       windowSec: weekly ? 7 * 86400 : 5 * 3600, source: "server", observedAt: now))
             }
         }
         if seenScoped.isEmpty, let w = o["seven_day_overage_included"] as? [String: Any], let u = pct(w["utilization"]) {
-            r.limits.append(Limit(id: "claude.week.fable", tool: "claude", label: "Tuần · Fable", used: u,
+            r.limits.append(Limit(id: "claude.week.fable", tool: "claude", label: L("Week · Fable", "Tuần · Fable"), used: u,
                                   resetsAt: time(w["resets_at"]), windowSec: 7 * 86400, source: "server", observedAt: now))
         }
         if let bd = o["seven_day_breakdown"] as? [String: Any], let rows = bd["rows"] as? [[String: Any]] {
@@ -127,7 +127,7 @@ enum Server {
                 guard let n = row["display_name"] as? String, let p = (row["percent"] as? NSNumber)?.doubleValue, p > 0 else { return nil }
                 return (n, p)
             }.sorted { $0.1 > $1.1 }
-            if !parts.isEmpty { r.extra.append("Quota tuần tiêu ở: " + parts.map { "\($0.0) \(Int($0.1))%" }.joined(separator: " · ")) }
+            if !parts.isEmpty { r.extra.append(L("Weekly quota went to: ", "Quota tuần tiêu ở: ") + parts.map { "\($0.0) \(Int($0.1))%" }.joined(separator: " · ")) }
         }
         if let ex = o["extra_usage"] as? [String: Any], (ex["is_enabled"] as? Bool) == true {
             let dp = (ex["decimal_places"] as? NSNumber)?.intValue ?? 2
@@ -135,8 +135,8 @@ enum Server {
             let used = ((ex["used_credits"] as? NSNumber)?.doubleValue ?? 0) / div
             let cap = ((ex["monthly_limit"] as? NSNumber)?.doubleValue ?? 0) / div
             let cur = (ex["currency"] as? String) ?? "USD"
-            r.extra.append(cap > 0 ? String(format: "Extra usage tháng: %.2f / %.2f %@", used, cap, cur)
-                                   : String(format: "Extra usage tháng: %.2f %@", used, cur))
+            r.extra.append(cap > 0 ? String(format: L("Extra usage this month: %.2f / %.2f %@", "Extra usage tháng: %.2f / %.2f %@"), used, cap, cur)
+                                   : String(format: L("Extra usage this month: %.2f %@", "Extra usage tháng: %.2f %@"), used, cur))
         }
         return r
     }
@@ -150,18 +150,18 @@ enum Server {
             ?? home.appendingPathComponent(".codex/auth.json")
         guard let d = try? Data(contentsOf: path), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let t = o["tokens"] as? [String: Any], let token = t["access_token"] as? String else {
-            r.error = "Không đọc được login ChatGPT của Codex"; return r
+            r.error = L("Can't read Codex's ChatGPT login", "Không đọc được login ChatGPT của Codex"); return r
         }
         if let exp = jwtExp(token), exp < Date().timeIntervalSince1970 {
-            r.error = "Token Codex hết hạn — chạy Codex là tự làm mới"; return r
+            r.error = L("Codex token expired: run Codex to renew it", "Token Codex hết hạn — chạy Codex là tự làm mới"); return r
         }
         var headers = ["Authorization": "Bearer \(token)", "User-Agent": "TokenPet"]
         if let acc = t["account_id"] as? String { headers["ChatGPT-Account-Id"] = acc }
         let (code, data, hdr) = httpGet(URL(string: "https://chatgpt.com/backend-api/wham/usage")!, headers: headers)
-        if code == 429 { r.error = "Server Codex báo gọi quá dày (429)"; r.retryAfter = retryAfter(hdr) ?? 600; return r }
-        if code == 401 || code == 403 { r.error = "Token Codex bị từ chối — chạy Codex để làm mới"; return r }
+        if code == 429 { r.error = L("Codex's server says too many requests (429)", "Server Codex báo gọi quá dày (429)"); r.retryAfter = retryAfter(hdr) ?? 600; return r }
+        if code == 401 || code == 403 { r.error = L("Codex token rejected: run Codex to renew it", "Token Codex bị từ chối — chạy Codex để làm mới"); return r }
         guard code == 200, let body = data, let j = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-            r.error = "Server Codex lỗi (\(code))"; return r
+            r.error = L("Codex server error (\(code))", "Server Codex lỗi (\(code))"); return r
         }
         r.raw = j
         let now = Date().timeIntervalSince1970
@@ -175,7 +175,7 @@ enum Server {
                 if reset == 0, let a = after { reset = now + a }
                 if u == 0, let a = after, a >= secs - 120 { reset = 0 }   // window not started yet
                 let isWeek = secs >= 86400
-                let label = (name.isEmpty ? "" : "\(name) · ") + (isWeek ? "Tuần" : (secs == 18000 ? "5 giờ" : "\(Int(secs / 3600)) giờ"))
+                let label = (name.isEmpty ? "" : "\(name) · ") + (isWeek ? L("Week", "Tuần") : (secs == 18000 ? L("5 hours", "5 giờ") : L("\(Int(secs / 3600)) hours", "\(Int(secs / 3600)) giờ")))
                 r.limits.append(Limit(id: "\(prefix).\(isWeek ? "week" : "5h")", tool: "codex", label: label, used: u,
                                       resetsAt: reset, windowSec: secs, source: "server", observedAt: now))
             }
@@ -183,8 +183,9 @@ enum Server {
         windows(j["rate_limit"] as? [String: Any], prefix: "codex", name: "")
         if let extra = j["additional_rate_limits"] as? [[String: Any]] {
             for a in extra {
-                let name = (a["limit_name"] as? String) ?? (a["metered_feature"] as? String) ?? "Khác"
-                let slug = name.lowercased().filter { $0.isLetter || $0.isNumber }
+                let raw = (a["limit_name"] as? String) ?? (a["metered_feature"] as? String)
+                let name = raw ?? L("Other", "Khác")
+                let slug = (raw ?? "Khác").lowercased().filter { $0.isLetter || $0.isNumber }   // id stays the same in both languages
                 windows(a["rate_limit"] as? [String: Any], prefix: "codex.\(slug)", name: name)
             }
         }
@@ -192,7 +193,7 @@ enum Server {
             r.extra.append("Credits: \((c["balance"] as? String) ?? "\(c["balance"] ?? "?")")")
         }
         if let rc = j["rate_limit_reset_credits"] as? [String: Any], let n = (rc["available_count"] as? NSNumber)?.intValue, n > 0 {
-            r.extra.append("Lượt reset để dành: \(n)")
+            r.extra.append(L("Saved resets: \(n)", "Lượt reset để dành: \(n)"))
         }
         return r
     }

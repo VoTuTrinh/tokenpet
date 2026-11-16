@@ -130,7 +130,7 @@ func analyze(_ l: Limit, _ hist: [Sample], now: Double) -> Insight {
     if let e = same.last, let f = usedAt(now - look, same) ?? same.first(where: { $0.ts >= now - look }),
        e.ts - f.ts >= look / 3 {
         i.ratePerHour = max(0, e.used - f.used) / (e.ts - f.ts) * 3600
-        i.rateBasis = l.weekly ? "3 giờ qua" : "1 giờ qua"
+        i.rateBasis = l.weekly ? L("last 3 hours", "3 giờ qua") : L("last hour", "1 giờ qua")
     }
     // Typical rate while active: median over 14 days of the same lookback, sampled every half lookback.
     var rates: [Double] = []
@@ -153,15 +153,15 @@ func analyze(_ l: Limit, _ hist: [Sample], now: Double) -> Insight {
     var rate = i.ratePerHour ?? 0
     if rate == 0 && l.weekly && l.resetsAt > 0 {
         let start = l.resetsAt - l.windowSec
-        if now - start > 3600 { rate = l.used / (now - start) * 3600; i.rateBasis = "trung bình tuần" }
+        if now - start > 3600 { rate = l.used / (now - start) * 3600; i.rateBasis = L("week average", "trung bình tuần") }
     }
     if l.used >= 100 {
-        i.headline = "hết"
+        i.headline = L("out", "hết")
     } else if rate > 0 {
         let hit = now + (100 - l.used) / rate * 3600
         if l.resetsAt == 0 || hit < l.resetsAt {
             i.hitAt = hit
-            i.headline = "sẽ hết ~\(fmtWhen(hit))"
+            i.headline = L("runs out ~\(fmtWhen(hit))", "sẽ hết ~\(fmtWhen(hit))")
         } else {
             i.headline = ""
         }
@@ -175,7 +175,7 @@ func analyze(_ l: Limit, _ hist: [Sample], now: Double) -> Insight {
         let days = max(0.1, (l.resetsAt - now) / 86400)
         i.perDayLeft = (100 - l.used) / days
     }
-    if let a = i.anomaly { i.details.append(String(format: "tiêu gấp %.1f×", a)) }
+    if let a = i.anomaly { i.details.append(L(String(format: "burning %.1f× the usual", a), String(format: "tiêu gấp %.1f×", a))) }
     let soon = i.minutesToEmpty.map { $0 < 60 } ?? false
     i.level = (i.used >= 90 || soon) ? 2 : ((i.used >= 70 || i.hitAt != nil || i.anomaly != nil) ? 1 : 0)
     return i

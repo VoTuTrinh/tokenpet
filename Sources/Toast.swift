@@ -8,22 +8,21 @@ import AppKit
 struct ToastView: View {
     var m: MachineState
     var suggestions: [(String, Double)]
-    var kind: PetKind
     var onOpen: () -> Void
     var onLater: () -> Void
     var body: some View {
         let total = suggestions.reduce(0) { $0 + $1.1 }
         HStack(alignment: .top, spacing: 12) {
             if Prefs.shared.pet {
-                PetView(color: claudeColor, mood: m.pressure >= 4 ? .alarmed : .worried, kind: kind, fullness: Double(m.freePct) / 100, animate: false, size: 44)
+                PetView(color: claudeColor, mood: m.pressure >= 4 ? .alarmed : .worried, kind: Prefs.shared.petClaude, fullness: Double(m.freePct) / 100, animate: false, size: 44)
                     .padding(.top, 2)
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text(m.pressure >= 4 ? "Máy hết RAM rồi!" : "Máy sắp hết RAM").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                Text("RAM còn \(m.freePct)% · swap \(String(format: "%.1f", m.swapUsedGB)) GB · AI đang giữ \(fmtMB(m.aiMB))")
+                Text(m.pressure >= 4 ? L("This Mac is out of RAM!", "Máy hết RAM rồi!") : L("This Mac is running out of RAM", "Máy sắp hết RAM")).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                Text(m.verdict)
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
                 if !suggestions.isEmpty {
-                    Text("Nên dọn, lấy lại ~\(fmtMB(total)):").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.85)).padding(.top, 2)
+                    Text(L("Biggest first · these give back \(fmtMB(total))", "Lớn nhất trước · mấy thứ này trả lại \(fmtMB(total))")).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.85)).padding(.top, 2)
                     ForEach(suggestions.indices, id: \.self) { k in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text("•").foregroundStyle(.white.opacity(0.5))
@@ -35,11 +34,11 @@ struct ToastView: View {
                 }
                 HStack(spacing: 8) {
                     Button(action: onOpen) {
-                        Text("Xem & dọn  ⌃⌥M").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.black)
+                        Text(L("Review & free  ⌃⌥M", "Xem & dọn  ⌃⌥M")).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.black)
                             .padding(.horizontal, 10).padding(.vertical, 5).background(Capsule().fill(Color.white.opacity(0.92)))
                     }
                     Button(action: onLater) {
-                        Text("Để sau").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                        Text(L("Later", "Để sau")).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.8))
                             .padding(.horizontal, 10).padding(.vertical, 5).background(Capsule().fill(Color.white.opacity(0.12)))
                     }
                     Spacer()
@@ -47,8 +46,7 @@ struct ToastView: View {
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.94)))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+        .floatingSurface()
         .environment(\.colorScheme, .dark)
     }
 }
@@ -59,9 +57,9 @@ final class ToastController {
     private var hideWork: DispatchWorkItem?
     private var hovering = false
 
-    func show(_ m: MachineState, _ sug: [(String, Double)], kind: PetKind) {
+    func show(_ m: MachineState, _ sug: [(String, Double)]) {
         hide()
-        let view = ToastView(m: m, suggestions: sug, kind: kind,
+        let view = ToastView(m: m, suggestions: sug,
                              onOpen: { [weak self] in self?.hide(); AppDelegate.shared?.openMachine() },
                              onLater: { [weak self] in self?.hide() })
             .onHover { [weak self] in self?.hovering = $0; if !$0 { self?.scheduleHide(8) } }

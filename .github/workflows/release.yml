@@ -1,0 +1,48 @@
+# Push a tag like v0.2.0 → build the universal app, package DMG + zip, attach them to a GitHub release.
+# Optional secrets for a notarized build: MACOS_CERT_P12 (base64), MACOS_CERT_PASSWORD, SIGN_ID,
+# NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD (app-specific password). Without them the build is ad-hoc signed.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Import signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then echo "no certificate: ad-hoc build"; exit 0; fi
+          KC="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p ci "$KC"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC"
+          security list-keychains -d user -s "$KC"
+          if [ -n "$NOTARY_APPLE_ID" ]; then
+            xcrun notarytool store-credentials tokenpet --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
+            echo "NOTARY_PROFILE=tokenpet" >> "$GITHUB_ENV"
+          fi
+      - name: Build and package
+        env:
+          SIGN_ID: ${{ secrets.SIGN_ID }}
+          REPO: ${{ github.repository }}
+        run: |
+          export VERSION="${GITHUB_REF_NAME#v}"
+          ./scripts/package.sh
+          build/TokenPet.app/Contents/MacOS/TokenPet --selftest
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "TokenPet ${GITHUB_REF_NAME#v}" --generate-notes
