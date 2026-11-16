@@ -68,7 +68,7 @@ final class ToastController {
         let p = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.level = .statusBar
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
+        p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = !Surface.glass
         p.hidesOnDeactivate = false; p.isReleasedWhenClosed = false; p.animationBehavior = .none
         p.contentView = host
         if let scr = NSScreen.main?.visibleFrame {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+- Details per tool: click a tool's card in the panel to open that tool's detail in place (other limits, current pace, what is left per day, what is running, what the vendor adds, the last 24 hours, where the numbers come from). The single "Quota details" switch is gone.
+- Edge tab: drag it up or down to move it; it opens on a click only, never on hover.
+- Fixed: on macOS 26 and later, clicking inside the menu bar panel (or the low-memory card) drew a dark outline around it. Glass panels no longer ask for a second, rectangular window shadow.
+
 ## 0.3.0
 Repositioned around what agents hold on the Mac, with quota second; brought the information in line with comparable tools.
 - English and Vietnamese. Follows the Mac's language; pin one in Settings › Advanced.

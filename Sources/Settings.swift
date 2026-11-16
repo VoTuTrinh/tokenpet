@@ -215,12 +215,12 @@ struct SettingsView: View {
     }
     var edgeStatus: String {
         if !prefs.edgeDock {
-            return L("A small tab on the side of every screen; rest the pointer on it and the panel slides out.",
-                     "Một thẻ nhỏ ở cạnh mọi màn hình; dừng chuột vào là bảng trượt ra.")
+            return L("A small tab on the side of every screen; click it and the panel slides out, drag it to move it up or down.",
+                     "Một thẻ nhỏ ở cạnh mọi màn hình; bấm vào là bảng trượt ra, kéo để dời lên xuống.")
         }
         let n = NSScreen.screens.count
-        return L("Showing on the \(prefs.edgeRight ? "right" : "left") edge\(n > 1 ? " of \(n) screens" : ""), 120 pt below the top.",
-                 "Đang hiện ở mép \(prefs.edgeRight ? "phải" : "trái")\(n > 1 ? " của \(n) màn hình" : ""), cách mép trên 120 pt.")
+        return L("Showing on the \(prefs.edgeRight ? "right" : "left") edge\(n > 1 ? " of \(n) screens" : ""). Click it to open; drag it up or down.",
+                 "Đang hiện ở mép \(prefs.edgeRight ? "phải" : "trái")\(n > 1 ? " của \(n) màn hình" : ""). Bấm để mở; kéo để dời lên xuống.")
     }
     /// A Toggle whose label may wrap: a long one-line label would otherwise widen the whole form past the window.
     func toggle(_ t: String, _ b: Binding<Bool>) -> some View {

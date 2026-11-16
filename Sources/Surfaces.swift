@@ -297,6 +297,7 @@ struct EdgeContent: View {
     var hot = false
     var onHover: ((Bool) -> Void)? = nil
     var onTap: (() -> Void)? = nil
+    var onDrag: ((Bool) -> Void)? = nil      // true while dragging, false when the drag ends
     static let tabW: CGFloat = 46, flare: CGFloat = 16, cardW: CGFloat = 424
     /// One block per tool (24 pt ring + its number), 10 pt apart, 12 pt of air at each end, plus the two flares.
     static var tabH: CGFloat { let n = CGFloat(max(1, Prefs.shared.tools.count)); return n * 38 + (n - 1) * 12 + 28 + 2 * flare }
@@ -329,6 +330,10 @@ struct EdgeContent: View {
                     }
                     .frame(width: EdgeContent.tabW, height: EdgeContent.tabH)
                     .background(SideTabShape(right: right, flare: EdgeContent.flare).fill(Color.black))
+                    .opacity(hot ? 1 : 0.9)
+                    // Drag the tab up or down to put it where it is not in the way; a plain click opens the panel.
+                    .gesture(DragGesture(minimumDistance: 4).onChanged { _ in onDrag?(true) }.onEnded { _ in onDrag?(false) })
+                    .help(L("Click to open. Drag to move it up or down.", "Bấm để mở. Kéo để dời lên xuống."))
                     .transition(.opacity)
                 }
             }
@@ -347,17 +352,19 @@ final class EdgeController: ObservableObject {
     private var openWork: DispatchWorkItem?
     let panel: NSPanel
     let right: Bool
-    let edgeX: CGFloat, tabTop: CGFloat, screenBottom: CGFloat
+    let edgeX: CGFloat, screenTop: CGFloat, screenBottom: CGFloat
+    var tabTop: CGFloat
     weak var model: Model?
     private var collapseWork: DispatchWorkItem?
+    private var dragFrom: (mouse: CGFloat, top: CGFloat)?
     static let openH: CGFloat = 620
 
     init(screen: NSScreen, right: Bool, model: Model) {
         self.model = model; self.right = right
         let vf = screen.visibleFrame
         edgeX = right ? vf.maxX : vf.minX
-        tabTop = vf.maxY - 120
-        screenBottom = vf.minY
+        screenTop = vf.maxY; screenBottom = vf.minY
+        tabTop = min(vf.maxY - 8, max(vf.minY + EdgeContent.tabH + 8, vf.maxY - CGFloat(Prefs.shared.edgeY)))
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -371,21 +378,34 @@ final class EdgeController: ObservableObject {
 
     func frame(_ open: Bool) -> NSRect {
         let w = open ? EdgeContent.cardW + 8 : EdgeContent.tabW
-        let h = open ? min(EdgeController.openH, tabTop - screenBottom) : EdgeContent.tabH
-        return NSRect(x: right ? edgeX - w : edgeX, y: tabTop - h, width: w, height: h)
+        let h = open ? min(EdgeController.openH, screenTop - screenBottom - 16) : EdgeContent.tabH
+        // A tab dragged low still opens a whole card: the card's top is raised until it fits above the Dock.
+        let top = open ? max(tabTop, screenBottom + h + 8) : tabTop
+        return NSRect(x: right ? edgeX - w : edgeX, y: top - h, width: w, height: h)
     }
+    /// The tab never opens on hover: it sits where the pointer travels all day (scroll bars, window edges).
+    /// Hover only lights it; a click opens the panel, and leaving the open panel closes it after a moment.
     func hover(_ inside: Bool) {
         collapseWork?.cancel(); collapseWork = nil
-        openWork?.cancel(); openWork = nil
         hot = inside
-        if inside {
-            if !open { openWork = Hover.dwell(in: { [weak self] in self?.panel.frame ?? .zero }) { [weak self] in self?.go(true) } }
-            return
-        }
-        guard open else { return }
+        guard open, !inside else { return }
         let w = DispatchWorkItem { [weak self] in self?.go(false) }
         collapseWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + Hover.closeDelay, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: w)
+    }
+    /// Vertical drag, measured on the screen (the window itself moves under the gesture).
+    func drag(_ active: Bool) {
+        guard !open else { return }
+        let y = NSEvent.mouseLocation.y
+        if active {
+            if dragFrom == nil { dragFrom = (y, tabTop) }
+            guard let d = dragFrom else { return }
+            tabTop = min(screenTop - 8, max(screenBottom + EdgeContent.tabH + 8, d.top + (y - d.mouse)))
+            panel.setFrame(frame(false), display: true)
+        } else {
+            dragFrom = nil
+            Prefs.shared.edgeY = Double(screenTop - tabTop)       // every screen's tab follows on the next rebuild
+        }
     }
     func tap() { openWork?.cancel(); openWork = nil; collapseWork?.cancel(); collapseWork = nil; go(!open) }
     func go(_ o: Bool) {
@@ -406,7 +426,7 @@ struct EdgeRoot: View {
     @ObservedObject var ctl: EdgeController
     @ObservedObject var model: Model
     var body: some View {
-        EdgeContent(model: model, open: ctl.open, right: ctl.right, hot: ctl.hot, onHover: { ctl.hover($0) }, onTap: { ctl.tap() })
+        EdgeContent(model: model, open: ctl.open, right: ctl.right, hot: ctl.hot, onHover: { ctl.hover($0) }, onTap: { ctl.tap() }, onDrag: { ctl.drag($0) })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }

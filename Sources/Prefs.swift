@@ -27,6 +27,8 @@ final class Prefs: ObservableObject {
     /// that covers the app's menus on the left and status items on the right.
     @Published var notchNumbers: Bool { didSet { d.set(notchNumbers, forKey: "s.notchNum") } }
     @Published var edgeDock: Bool { didSet { d.set(edgeDock, forKey: "s.edge") } }
+    /// How far below the top of the screen the edge tab sits; the user drags the tab to change it.
+    @Published var edgeY: Double { didSet { d.set(edgeY, forKey: "s.edgeY") } }
     @Published var edgeRight: Bool { didSet { d.set(edgeRight, forKey: "s.edgeRight") } }
     @Published var floating: Bool { didSet { d.set(floating, forKey: "s.floating") } }
     @Published var menuBar: Bool { didSet { d.set(menuBar, forKey: "s.menubar") } }
@@ -67,6 +69,7 @@ final class Prefs: ObservableObject {
         edgeDock = d.object(forKey: "s.edge") as? Bool ?? !NSScreen.screens.contains { $0.safeAreaInsets.top > 0 && $0.auxiliaryTopLeftArea != nil }
         edgeRight = d.object(forKey: "s.edgeRight") as? Bool ?? true
         notchNumbers = d.object(forKey: "s.notchNum") as? Bool ?? false
+        edgeY = d.object(forKey: "s.edgeY") as? Double ?? 120
         floating = d.object(forKey: "s.floating") as? Bool ?? false
         menuBar = d.object(forKey: "s.menubar") as? Bool ?? false    // shown anyway when no other surface can be (menuBarVisible)
         showClaude = d.object(forKey: "t.claude") as? Bool ?? true

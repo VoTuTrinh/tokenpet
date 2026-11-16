@@ -136,7 +136,9 @@ struct OnboardingView: View {
     var whereText: (title: String, how: String) {
         let hasNotch = NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
         if prefs.notch && hasNotch { return (L("Rest the pointer on the notch, or click it", "Dừng chuột trên notch, hoặc bấm vào nó"), L("Hold the pointer still for a moment on the notch at the top of your MacBook's screen, or click it. The quota panel opens, and closes by itself when the pointer leaves.", "Dừng chuột một chút trên notch ở mép trên màn hình MacBook, hoặc bấm vào nó. Bảng quota mở ra, rời chuột là nó tự thu lại.")) }
-        if prefs.edgeDock { return (L("Rest the pointer on the tab at the \(prefs.edgeRight ? "right" : "left") edge, or click it", "Dừng chuột trên thẻ ở mép \(prefs.edgeRight ? "phải" : "trái"), hoặc bấm vào nó"), L("This screen has no notch, so TokenPet sits in a small tab on the \(prefs.edgeRight ? "right" : "left") edge of the screen. Hold the pointer still on it for a moment, or click it, and the panel slides out.", "Màn hình này không có notch nên TokenPet nằm ở một thẻ nhỏ sát mép \(prefs.edgeRight ? "phải" : "trái") màn hình. Dừng chuột một chút trên thẻ, hoặc bấm vào nó, là bảng trượt ra.")) }
+        if prefs.edgeDock { return (L("Click the tab at the \(prefs.edgeRight ? "right" : "left") edge", "Bấm vào thẻ ở mép \(prefs.edgeRight ? "phải" : "trái")"),
+                                    L("There is no notch on this screen, so TokenPet sits in a small tab at the \(prefs.edgeRight ? "right" : "left") edge. Click it and the panel slides out; drag it up or down if it is in the way.",
+                                      "Màn hình này không có notch nên TokenPet nằm ở một thẻ nhỏ sát mép \(prefs.edgeRight ? "phải" : "trái"). Bấm vào là bảng trượt ra; kéo lên xuống nếu nó vướng.")) }
         return (L("Click TokenPet in the menu bar", "Bấm vào mục TokenPet trên menu bar"), L("Look for “C … · X …” on the right side of the menu bar and click it. Right-click for the menu.", "Tìm dòng “C … · X …” ở góc phải menu bar và bấm vào. Bấm chuột phải để ra menu."))
     }
     private var tryIt: some View {

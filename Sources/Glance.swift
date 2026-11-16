@@ -42,7 +42,23 @@ struct ToolCardView: View {
     var rows: [Insight]
     var animate: Bool
     var showPet: Bool
+    var expanded = false
+    var detail: AnyView? = nil       // this tool's own detail, shown inside the card when it is open
+    var onToggle: (() -> Void)? = nil
+    @State private var hover = false
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+            if expanded, let d = detail { d.transition(.opacity) }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(CardGlow(tint: s.tight.map { $0.level == 0 ? s.color : levelColor($0.level) } ?? s.color, lift: hover || expanded))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { onToggle?() }
+        .help(expanded ? "" : L("Click for \(s.name)'s details", "Bấm để xem chi tiết của \(s.name)"))
+    }
+    var header: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(spacing: 4) {
                 PetRing(color: s.color, used: s.tight?.used, level: s.tight?.level ?? 0, mood: s.mood, animate: animate, size: 46, showPet: showPet, kind: s.kind)
@@ -71,9 +87,9 @@ struct ToolCardView: View {
                     ForEach(rows.indices, id: \.self) { k in StatTile(i: rows[k], color: s.color) }
                 }
             }
+            Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(hover || expanded ? 0.7 : 0.3))
+                .rotationEffect(.degrees(expanded ? 180 : 0))
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(CardGlow(tint: s.tight.map { $0.level == 0 ? s.color : levelColor($0.level) } ?? s.color))
     }
 }
 
@@ -146,32 +162,23 @@ struct GlanceView: View {
     @ObservedObject var model: Model
     @ObservedObject var prefs = Prefs.shared
     var animate: Bool
-    var forceDetails: Bool? = nil     // --snapshot
-    @State private var showDetails = false     // always collapsed when the glance opens; not remembered
+    var forceDetails: Bool? = nil     // --snapshot: open the first tool's card
+    @State private var open: String? = nil     // the tool whose card is open; closed again each time the glance opens
 
     var body: some View {
-        let openD = forceDetails ?? showDetails
         VStack(alignment: .leading, spacing: 8) {
             if prefs.tools.isEmpty {
                 Text(L("No tools enabled. Turn on Claude or Codex in Settings.", "Chưa bật công cụ nào. Bật Claude hoặc Codex trong Cài đặt.")).font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).padding(12)
             }
+            // Click a card to see that tool's detail, in place. One open at a time, so the panel stays short.
             ForEach(prefs.tools, id: \.self) { tool in
-                ToolCardView(s: model.summary(tool), rows: model.mainRows(tool), animate: animate, showPet: prefs.pet)
-            }
-            // Quota detail folds out right under the quota cards, before the machine card, so it reads as one block.
-            if !prefs.tools.isEmpty {
-                Button(action: {
-                    withAnimation(prefs.transitions ? .spring(response: 0.3, dampingFraction: 0.85) : nil) { showDetails.toggle() }
-                    model.statsWanted = prefs.floating || showDetails
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: openD ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
-                        Text(L("Quota details", "Chi tiết quota"))
-                        Spacer()
-                    }.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.white.opacity(0.55)).padding(.horizontal, 12)
-                if openD { details.padding(.horizontal, 12).padding(.bottom, 4) }
+                let isOpen = open == tool || (forceDetails == true && tool == prefs.tools.first)
+                ToolCardView(s: model.summary(tool), rows: model.mainRows(tool), animate: animate, showPet: prefs.pet,
+                             expanded: isOpen, detail: AnyView(toolDetail(tool)),
+                             onToggle: {
+                                 withAnimation(prefs.transitions ? .spring(response: 0.3, dampingFraction: 0.88) : nil) { open = open == tool ? nil : tool }
+                                 model.statsWanted = prefs.floating || open != nil
+                             })
             }
             MachineCard(model: model)
             HStack(spacing: 6) {
@@ -202,29 +209,45 @@ struct GlanceView: View {
             if parts.count > 1 { Text(parts[1]).foregroundStyle(.white.opacity(0.9)).monospacedDigit().multilineTextAlignment(.trailing) }
         }.font(.system(size: 10)).fixedSize(horizontal: false, vertical: true)
     }
-    /// Detail: per-model weeks and extra limits as rows, what the servers add (extra usage, where the week went,
-    /// credits), and today's tokens / API-equivalent $ when the stats are built.
-    @ViewBuilder var details: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(prefs.tools, id: \.self) { tool in
-                let rows = model.detailRows(tool)
-                let extra = tool == "claude" ? model.claudeSrv.extra : model.codexSrv.extra
-                if !rows.isEmpty || !extra.isEmpty {
-                    Text(tool == "claude" ? "CLAUDE" : "CODEX").font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(tool == "claude" ? claudeColor : codexColor).padding(.top, 2)
-                    ForEach(rows.indices, id: \.self) { k in DetailRow(i: rows[k], color: tool == "claude" ? claudeColor : codexColor) }
-                    ForEach(extra, id: \.self) { e in fact(e) }
-                }
+
+    /// One tool's detail: the other limits (per-model weeks, extras), how fast it is being used, what is running,
+    /// what the vendor adds, the last 24 hours, and where the numbers come from.
+    @ViewBuilder func toolDetail(_ tool: String) -> some View {
+        let ins = model.insights(tool), rows = model.detailRows(tool)
+        let extra = tool == "claude" ? model.claudeSrv.extra : model.codexSrv.extra
+        let color = tool == "claude" ? claudeColor : codexColor
+        let now = Date().timeIntervalSince1970
+        let five = ins.first { $0.limit.id == "\(tool).5h" }, week = ins.first { $0.limit.id == "\(tool).week" }
+        let running = model.sessions.filter { $0.tool == tool && $0.running }
+        VStack(alignment: .leading, spacing: 7) {
+            Rectangle().fill(Color.white.opacity(0.1)).frame(height: 0.5)
+            ForEach(rows.indices, id: \.self) { k in DetailRow(i: rows[k], color: color) }
+            if let f = five, !f.stale, let r = f.ratePerHour, r >= 0.5 {
+                fact(L("Pace now: \(Int(r.rounded()))% of the 5-hour limit per hour", "Tốc độ hiện tại: \(Int(r.rounded()))% giới hạn 5 giờ mỗi giờ"))
             }
+            if let w = week, !w.stale, let d = w.perDayLeft, d > 0 {
+                fact(L("Left for each day until the reset: \(Int(d.rounded()))% of the week", "Còn cho mỗi ngày tới lúc reset: \(Int(d.rounded()))% quota tuần"))
+            }
+            if !running.isEmpty {
+                fact(L("Running now: ", "Đang chạy: ") + running.prefix(3).map { "\($0.project) · \(fmtTok(Int($0.tokPerHour)))/h" }.joined(separator: ", ")
+                     + (running.count > 3 ? " +\(running.count - 3)" : ""))
+            }
+            ForEach(extra, id: \.self) { e in fact(e) }
             if model.stats.ready {
                 let st = model.stats
-                Text(L("LAST 24 HOURS", "24 GIỜ QUA")).font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.45)).padding(.top, 2)
-                if st.c24hTok > 0 { fact(L("Claude: \(fmtTok(st.c24hTok)) tokens · ~\(fmtUSD(st.c24hUSD)) at API prices", "Claude: \(fmtTok(st.c24hTok)) token · ~\(fmtUSD(st.c24hUSD)) theo giá API")) }
-                if st.x24hTok > 0 { fact(L("Codex: \(fmtTok(st.x24hTok)) tokens", "Codex: \(fmtTok(st.x24hTok)) token")) }
-                if st.c24hTok == 0 && st.x24hTok == 0 { fact(L("No tokens used", "Chưa dùng token nào")) }
+                if tool == "claude" { fact(st.c24hTok > 0 ? L("Last 24 hours: \(fmtTok(st.c24hTok)) tokens · ~\(fmtUSD(st.c24hUSD)) at API prices", "24 giờ qua: \(fmtTok(st.c24hTok)) token · ~\(fmtUSD(st.c24hUSD)) theo giá API") : L("Last 24 hours: no tokens used", "24 giờ qua: chưa dùng token nào")) }
+                else { fact(st.x24hTok > 0 ? L("Last 24 hours: \(fmtTok(st.x24hTok)) tokens", "24 giờ qua: \(fmtTok(st.x24hTok)) token") : L("Last 24 hours: no tokens used", "24 giờ qua: chưa dùng token nào")) }
+            }
+            if let newest = ins.max(by: { $0.limit.observedAt < $1.limit.observedAt }), newest.limit.observedAt > 0 {
+                let src = newest.limit.source
+                let name = src == "server" ? L("the vendor's server", "server của hãng") : (src == "statusline" ? L("Claude Code's status line", "statusline của Claude Code") : L("logs on this Mac", "log trên máy này"))
+                let age = now - newest.limit.observedAt
+                fact(L("Source: \(name), \(age < 90 ? "just now" : fmtAge(age) + " ago")", "Nguồn: \(name), \(age < 90 ? "vừa xong" : fmtAge(age) + " trước")"))
+            } else if tool == "claude" {
+                fact(L("Source: none yet. Pick one in Settings › Data", "Nguồn: chưa có. Chọn trong Cài đặt › Dữ liệu"))
             }
         }
-        .transition(.opacity.combined(with: .move(edge: .top)))
+        .padding(.leading, 2)
     }
 }
 
@@ -520,6 +543,10 @@ func fmtMB(_ mb: Double) -> String { mb >= 1024 ? String(format: "%.1f GB", mb /
 enum Surface {
     static let panelRadius: CGFloat = 26, cardRadius: CGFloat = 12
     static var flat = false       // --snapshot: no window server, so no glass
+    /// True when floating panels are drawn with the system's glass. Such a window must not ask for an AppKit
+    /// window shadow: the glass brings its own, and AppKit's is computed from the window's rectangle, which shows
+    /// as a dark outline around the panel once the window becomes key (seen on a click in the menu bar panel).
+    static var glass: Bool { if #available(macOS 26.0, *) { return !flat }; return false }
 }
 
 extension View {

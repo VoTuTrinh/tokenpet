@@ -546,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         p.contentViewController = host
         p.level = .popUpMenu
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
+        p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = !Surface.glass
         p.hidesOnDeactivate = false; p.isReleasedWhenClosed = false; p.animationBehavior = .none
         let item = win.convertToScreen(btn.convert(btn.bounds, to: nil))
         let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: item.midX, y: item.midY)) } ?? NSScreen.main

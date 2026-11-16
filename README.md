@@ -24,13 +24,13 @@ Needs macOS 13 or later; Apple Silicon and Intel. Releases are not notarized unl
 ## Where it lives
 A fresh install adds exactly one thing to the screen:
 - **Notch** on a MacBook with one: a pet in a ring on each side (Claude left, Codex right); the % beside it is an option, off by default because it can cover menu bar items. Nothing moves while it is collapsed.
-- **Tab on the screen edge** when no connected screen has a notch: the same rings stacked, each with its number.
+- **Tab on the screen edge** when no connected screen has a notch: the same rings stacked, each with its number. Drag it up or down; it opens on a click, never on hover.
 - **Menu bar item** only if you choose it in Settings, or when nothing else can show.
 
 The panel opens when the pointer **rests** on the notch or tab for a moment (0.16 s; never while a mouse button is down, so not mid-drag), closes 0.38 s after it leaves, and toggles at once on a click. Off the notch, panels use the system's Liquid Glass on macOS 26 and later; the notch panel stays black to match the hardware.
 
 ## The panel
-One card per tool: the pet, then **5 hours** and **Week**, each with "N% used", a bar, "resets Tue 01:39 · in 2h00", and a verdict: "runs out in ~8m", "on pace", "12% ahead of an even pace" or "lasts until the reset". "Quota details" folds out per-model weeks, extra limits, what the servers add, and the last 24 hours of tokens. The footer says how fresh the numbers are and has a refresh button.
+One card per tool: the pet, then **5 hours** and **Week**, each with "N% used", a bar, "resets Tue 01:39 · in 2h00", and a verdict: "runs out in ~8m", "on pace", "12% ahead of an even pace" or "lasts until the reset". Click a tool's card to open its detail in place: per-model weeks and extra limits, the current pace, what is left per day, what is running, what the vendor adds, the last 24 hours of tokens, and where the numbers come from. The footer says how fresh the numbers are and has a refresh button.
 
 A third card, **Mac**: agents' share of RAM, "Agents hold 4.8 GB", memory pressure in a word, and "Review & free · get back 2.3 GB". It opens the Mac window (also ⌃⌥M).
 
