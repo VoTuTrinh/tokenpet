@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- New app icon for macOS 26: an open glass ring, Claude orange to Codex blue, with the notch in its gap. No mascot.
+- New landing page: the real app plays its states as you scroll (rings, heads-up, panel, freeing RAM, the edge tab on a display without a notch), in the Liquid Glass look of macOS 26.
+
 ## 0.3.1
 - Details per tool: click a tool's card in the panel to open that tool's detail in place (other limits, current pace, what is left per day, what is running, what the vendor adds, the last 24 hours, where the numbers come from). The single "Quota details" switch is gone.
 - Edge tab: drag it up or down to move it; it opens on a click only, never on hover.

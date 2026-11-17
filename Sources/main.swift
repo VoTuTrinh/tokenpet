@@ -949,6 +949,8 @@ if args.contains("--dump") || args.contains("--snapshot") {
                                          others: [OtherApp(id: 100, name: "OrbStack", footprintMB: 2100, procs: 3, isApp: true), OtherApp(id: 101, name: "Google Chrome", footprintMB: 1300, procs: 55, isApp: true),
                                                   OtherApp(id: 102, name: "Visual Studio Code", footprintMB: 507, procs: 40, isApp: true), OtherApp(id: 103, name: "mds_stores", footprintMB: 315, procs: 1, isApp: false)],
                                          ramGB: 16, swapUsedGB: 14.5, swapTotalGB: 15.4, freePct: 9, pressure: 2, scannedAt: now)
+                var fs = Stats(); fs.ready = true; fs.c24hTok = 9_400_000; fs.c24hUSD = 41.2; fs.x24hTok = 2_100_000
+                m.stats = fs       // demo numbers, never this Mac's
                 m.claudeSrv.extra = [L("Weekly quota went to: Claude Code 88% · chat 12%", "Quota tuần tiêu ở: Claude Code 88% · chat 12%"), L("Extra usage this month: 3.20 / 50.00 USD", "Extra usage tháng: 3.20 / 50.00 USD")]
                 m.codexSrv.extra = ["Credits: 12.50", L("Saved resets: 1", "Lượt reset để dành: 1")]
                 // The heads-up line says exactly what the tile under it says: one forecast, one number.
@@ -1024,35 +1026,36 @@ if args.contains("--dump") || args.contains("--snapshot") {
 }
 
 if let k = args.firstIndex(of: "--icon"), k + 1 < args.count {
-    // The app icon, 1024 px: the pet inside its quota ring on the notch's black. build.sh turns it into .icns.
+    // The app icon, 1024 px: an open quota ring under the notch. build.sh turns it into .icns.
     MainActor.assumeIsolated {
-        // The app in one picture: the notch at the top of a dark screen, and under it the pet inside its quota
-        // ring. Same surface as the cards (near-black, lit from the top right by the pet's colour, a cooler glow
-        // opposite), with a rim lit from above like the system's glass icons.
+        // An open gauge: one thick glass ring in Claude's orange turning to Codex's blue, open at the top where the
+        // notch sits. The ring is the quota, the gap is the notch: what the app is and where it lives, in one shape
+        // that still reads at 16 px. macOS 26 style: dark tile, the ring lit from above like glass, a soft glow under it.
         let tile = RoundedRectangle(cornerRadius: 186, style: .continuous)
+        let ringGrad = LinearGradient(colors: [Color(red: 1.0, green: 0.54, blue: 0.36), Color(red: 0.83, green: 0.42, blue: 1.0), Color(red: 0.43, green: 0.61, blue: 1.0)],
+                                      startPoint: .bottomLeading, endPoint: .topTrailing)
+        let gap = 0.0606                                     // half the opening, as a fraction of the circle
+        let arc = Circle().trim(from: gap, to: 1 - gap).rotation(.degrees(-90))
         let icon = ZStack {
             ZStack {
-                Color(red: 0.055, green: 0.055, blue: 0.07)
-                RadialGradient(colors: [claudeColor.opacity(0.75), claudeColor.opacity(0.18), .clear], center: UnitPoint(x: 0.92, y: 0.04), startRadius: 0, endRadius: 700)
-                RadialGradient(colors: [codexColor.opacity(0.5), codexColor.opacity(0.1), .clear], center: UnitPoint(x: 0.02, y: 1.0), startRadius: 0, endRadius: 560)
-                // the notch
-                NotchShape(top: 30, bottom: 44).fill(Color.black).frame(width: 330, height: 92).frame(maxHeight: .infinity, alignment: .top)
-                // the gauge and the pet
+                LinearGradient(stops: [.init(color: Color(red: 0.118, green: 0.102, blue: 0.243), location: 0),
+                                       .init(color: Color(red: 0.051, green: 0.051, blue: 0.094), location: 0.6),
+                                       .init(color: Color(red: 0.031, green: 0.031, blue: 0.063), location: 1)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
                 ZStack {
-                    Circle().stroke(Color.white.opacity(0.13), lineWidth: 50)
-                    Circle().trim(from: 0, to: 0.7)
-                        .stroke(LinearGradient(colors: [Color(red: 1.0, green: 0.72, blue: 0.5), claudeColor], startPoint: .topTrailing, endPoint: .bottomLeading),
-                                style: StrokeStyle(lineWidth: 50, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .shadow(color: claudeColor.opacity(0.55), radius: 26)
-                    PetView(color: claudeColor, mood: .calm, kind: .blob, fullness: 1, animate: false, size: 330, centered: true)
-                        .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
+                    arc.stroke(ringGrad, lineWidth: 130).blur(radius: 60).opacity(0.8)                   // glow
+                    arc.stroke(ringGrad, style: StrokeStyle(lineWidth: 104, lineCap: .round))
+                        .shadow(color: .black.opacity(0.35), radius: 10, y: 10)
+                    arc.stroke(LinearGradient(colors: [Color.white.opacity(0.9), .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.35)),
+                               style: StrokeStyle(lineWidth: 16, lineCap: .round))
+                        .offset(y: -34).opacity(0.7)                                                       // light on the glass
                 }
-                .frame(width: 470, height: 470).offset(y: 46)
+                .frame(width: 500, height: 500).offset(y: 48)
+                NotchShape(top: 0, bottom: 48).fill(Color.black).frame(width: 240, height: 114).frame(maxHeight: .infinity, alignment: .top)
             }
             .frame(width: 824, height: 824)
             .clipShape(tile)
-            .overlay(tile.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.42), Color.white.opacity(0.06), Color.white.opacity(0.0)], startPoint: .top, endPoint: .bottom), lineWidth: 5))
+            .overlay(tile.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.5), Color.white.opacity(0.06), Color.white.opacity(0.0), Color.white.opacity(0.16)], startPoint: .top, endPoint: .bottom), lineWidth: 5))
             .shadow(color: .black.opacity(0.32), radius: 22, y: 12)
         }
         .frame(width: 1024, height: 1024).environment(\.colorScheme, .dark)
