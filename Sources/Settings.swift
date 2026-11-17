@@ -76,7 +76,19 @@ struct SettingsView: View {
             } header: { Text(L("Data", "Dữ liệu")) }
 
             Section {
-                DisclosureGroup(L("Advanced", "Nâng cao"), isExpanded: $advanced) {}
+                // The whole row is the button (a DisclosureGroup with no content only answered on its small chevron).
+                Button(action: { withAnimation(prefs.transitions ? .easeInOut(duration: 0.2) : nil) { advanced.toggle() } }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(advanced ? 90 : 0))
+                        Text(L("Advanced", "Nâng cao"))
+                        Spacer()
+                        Text(advanced ? L("Hide", "Ẩn") : L("Show", "Hiện")).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             if advanced || showAdvanced { advancedSections }
 
